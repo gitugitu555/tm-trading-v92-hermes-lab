@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from features.microstructure_ofi import process_chunk
+from features.microstructure_numba_ofi import process_chunk_fast as process_chunk
 
 COLD_ROOT = Path("/mnt/seagate/tm-trading-v555/data/raw/cryptohftdata/orderbook/binance_futures/BTCUSDT")
 HOT_OUT = ROOT / "data/hft/tier2/ofi"
@@ -55,7 +55,7 @@ def process_hour(zst_path: Path) -> str:
     if df.empty:
         return f"[{date_str} {hour_str}:00] Skipped: Empty file."
         
-    print(f"[{date_str} {hour_str}:00] Calculating tick-level OFI...")
+    print(f"[{date_str} {hour_str}:00] Calculating tick-level OFI (Numba Accelerated)...")
     df = df.sort_values(by=['transaction_time', 'event_time', 'first_update_id']).reset_index(drop=True)
     df = process_chunk(df)
     
