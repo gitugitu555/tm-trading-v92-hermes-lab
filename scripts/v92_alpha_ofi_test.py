@@ -25,7 +25,7 @@ BOOTSTRAP_SAMPLES = 1000
 def bootstrap_mean_ci_tstat(signed_returns: np.ndarray, samples: int = 1000):
     n = len(signed_returns)
     if n < 2:
-        return 0.0, 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
         
     mean_val = np.mean(signed_returns)
     std_val = np.std(signed_returns)
@@ -87,22 +87,24 @@ def main():
     
     # Sort and calculate cumulative OFI to enable instantaneous bar accumulation math
     df_ofi_pl = df_ofi_pl.sort("datetime").with_columns(
-        pl.col("ofi").cumsum().alias("cumulative_ofi")
+        pl.col("ofi").cum_sum().alias("cumulative_ofi")
     )
     
     print("3. AsOf Joining OFI to Volume Bars...")
+    df_ofi_pl = df_ofi_pl.with_columns(pl.col("datetime").cast(pl.Datetime("ns")))
+    
     # Convert timestamps to align
     df_bars_pl = df_bars_pl.with_columns([
-        pl.from_epoch("open_time", time_unit="ms").alias("datetime_open"),
-        pl.from_epoch("close_time", time_unit="ms").alias("datetime_close")
+        pl.from_epoch("open_time", time_unit="us").cast(pl.Datetime("ns")).alias("datetime_open"),
+        pl.from_epoch("close_time", time_unit="us").cast(pl.Datetime("ns")).alias("datetime_close")
     ])
     
-    # AsOf join to get cumulative OFI at the open and close of the bar
     df_join_open = df_bars_pl.join_asof(df_ofi_pl.select(["datetime", "cumulative_ofi"]), left_on="datetime_open", right_on="datetime", strategy="backward")
-    df_join_open = df_join_open.rename({"cumulative_ofi": "ofi_at_open"})
+    df_join_open = df_join_open.rename({"cumulative_ofi": "ofi_at_open"}).drop("datetime")
     
+    df_join_open = df_join_open.sort("datetime_close")
     df_full = df_join_open.join_asof(df_ofi_pl.select(["datetime", "cumulative_ofi"]), left_on="datetime_close", right_on="datetime", strategy="backward")
-    df_full = df_full.rename({"cumulative_ofi": "ofi_at_close"})
+    df_full = df_full.rename({"cumulative_ofi": "ofi_at_close"}).drop("datetime")
     
     # Total OFI accumulated during this volume bar
     df_full = df_full.with_columns(
