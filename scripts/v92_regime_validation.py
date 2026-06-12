@@ -96,12 +96,17 @@ def main():
             "idx": idx,
             "period": period,
             "regime": regime,
+            "side": side,
+            "raw_return": raw_return,
             "net_bps": net_return_bps
         })
         
     df_res = pd.DataFrame(results)
     
-    print("\n=== D4 Signal Performance by V9.2 Regime ===")
+    print("\n=== D4 Signal Performance by V9.2 Regime (Rigorous Diagnostics) ===")
+    
+    # Import surface_metrics inline to calculate rigorous stats
+    from research.v91_d4_surface import surface_metrics
     
     for period in ["2020-2023", "2024-2026"]:
         print(f"\n--- Period: {period} ---")
@@ -111,13 +116,35 @@ def main():
             print("No events.")
             continue
             
-        grouped = sub_df.groupby("regime")["net_bps"].agg(["count", "mean", "sum"])
+        for regime in ["EXHAUSTED", "TREND_BUILDUP", "ABSORPTION", "NOISE"]:
+            regime_df = sub_df[sub_df["regime"] == regime]
+            if len(regime_df) == 0: continue
+            
+            # Format inputs for surface_metrics: list of (side, raw_return)
+            tuples = list(zip(regime_df["side"], regime_df["raw_return"]))
+            metrics = surface_metrics(tuples, bootstrap_samples=1000)
+            
+            mean_net = metrics["net_expectancy_bps"]["5"]
+            t_stat = metrics["t_stat"]
+            median = metrics["median_signed_return_bps"] - 5.0
+            ci_low = metrics["bootstrap_mean_bps_ci_95"][0] - 5.0
+            ci_high = metrics["bootstrap_mean_bps_ci_95"][1] - 5.0
+            
+            print(f"[{regime}] Count: {len(tuples):<4} | Mean Net: {mean_net:>6.2f} bps | Median Net: {median:>6.2f} bps | "
+                  f"t-stat: {t_stat:>5.2f} | 95% CI: [{ci_low:>6.2f}, {ci_high:>6.2f}]")
+                  
+    # OOS check: Split 2024-2026 into two halves for EXHAUSTED
+    print("\n--- 2024-2026 Out-of-Sample Split (EXHAUSTED Regime Only) ---")
+    recent_exh = df_res[(df_res["period"] == "2024-2026") & (df_res["regime"] == "EXHAUSTED")].copy()
+    if len(recent_exh) > 0:
+        half_idx = len(recent_exh) // 2
+        h1 = recent_exh.iloc[:half_idx]
+        h2 = recent_exh.iloc[half_idx:]
         
-        # Sort by mean
-        grouped = grouped.sort_values("mean", ascending=False)
-        print(grouped)
-        
-        print(f"\nTotal Overall Net Expectancy: {sub_df['net_bps'].mean():.2f} bps (Count: {len(sub_df)})")
-
+        for name, h_df in [("First Half", h1), ("Second Half", h2)]:
+            tuples = list(zip(h_df["side"], h_df["raw_return"]))
+            metrics = surface_metrics(tuples, bootstrap_samples=1000)
+            print(f"[{name}] Count: {len(tuples):<3} | Mean Net: {metrics['net_expectancy_bps']['5']:>6.2f} bps | "
+                  f"Median Net: {metrics['median_signed_return_bps'] - 5.0:>6.2f} bps | t-stat: {metrics['t_stat']:>5.2f}")
 if __name__ == "__main__":
     main()
