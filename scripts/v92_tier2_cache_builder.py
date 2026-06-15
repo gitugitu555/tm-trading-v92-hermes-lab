@@ -27,13 +27,25 @@ HOT_OUT = ROOT / "data/hft/tier2"
 TEMP_DIR = ROOT / "data/hft/temp"
 
 
-def build_features_lazy(lazy_df: pl.LazyFrame, volume_bucket_size: float = 100.0) -> pl.LazyFrame:
+def _parse_is_buyer_maker_expr(column: str = "is_buyer_maker") -> pl.Expr:
+    normalized = pl.col(column).cast(pl.Utf8, strict=False).str.strip_chars().str.to_lowercase()
+    return (
+        pl.when(normalized.is_in(["true", "1", "t", "yes", "y"]))
+        .then(pl.lit(True))
+        .when(normalized.is_in(["false", "0", "f", "no", "n"]))
+        .then(pl.lit(False))
+        .otherwise(pl.lit(False))
+    )
+
+
+def build_features_lazy(lazy_df: pl.LazyFrame, volume_bucket_size: float = 500.0) -> pl.LazyFrame:
     """Construct fixed-size volume bars using Polars lazy execution."""
     df = lazy_df.with_columns(
         [
             pl.col("price").cast(pl.Float64),
             pl.col("qty").cast(pl.Float64),
             pl.col("timestamp").cast(pl.Int64),
+            _parse_is_buyer_maker_expr().alias("is_buyer_maker"),
         ]
     )
 
@@ -62,7 +74,15 @@ def build_features_lazy(lazy_df: pl.LazyFrame, volume_bucket_size: float = 100.0
         ]
     )
 
-    return bars.with_columns((pl.col("total_notional") / pl.col("volume")).alias("vwap"))
+    return bars.with_columns(
+        [
+            (pl.col("volume") >= volume_bucket_size).alias("is_complete"),
+            pl.when(pl.col("volume") > 0)
+            .then(pl.col("total_notional") / pl.col("volume"))
+            .otherwise(None)
+            .alias("vwap"),
+        ]
+    )
 
 
 def _archive_suffix(archive_path: Path, symbol: str) -> str:
@@ -76,8 +96,10 @@ def _archive_suffix(archive_path: Path, symbol: str) -> str:
 def _extract_first_csv(archive_path: Path, temp_dir: Path) -> Path:
     with zipfile.ZipFile(archive_path, "r") as zf:
         csv_candidates = [name for name in zf.namelist() if name.lower().endswith(".csv")]
-        if not csv_candidates:
-            raise ValueError(f"No CSV payload found in {archive_path.name}")
+        if len(csv_candidates) != 1:
+            if not csv_candidates:
+                raise ValueError(f"No CSV payload found in {archive_path.name}")
+            raise ValueError(f"Expected exactly one CSV payload in {archive_path.name}, found {len(csv_candidates)}")
         member = csv_candidates[0]
         zf.extract(member, path=temp_dir)
         return temp_dir / member
@@ -105,6 +127,7 @@ def process_archive_lazy(archive_path: Path, symbol: str = "BTCUSDT", output_dir
         except Exception as exc:
             return f"[{suffix}] Failed: Could not extract zip - {exc}"
 
+        tmp_out_file = Path(f"{out_file}.tmp")
         try:
             lazy_df = pl.scan_csv(
                 temp_csv_path,
@@ -122,8 +145,14 @@ def process_archive_lazy(archive_path: Path, symbol: str = "BTCUSDT", output_dir
             )
             lazy_bars = build_features_lazy(lazy_df, volume_bucket_size=500.0)
             bars = lazy_bars.collect(streaming=True)
-            bars.write_parquet(out_file, compression="zstd")
+            bars.write_parquet(tmp_out_file, compression="zstd")
+            os.replace(tmp_out_file, out_file)
         except Exception as exc:
+            if tmp_out_file.exists():
+                try:
+                    tmp_out_file.unlink()
+                except OSError:
+                    pass
             return f"[{suffix}] Failed during processing: {exc}"
 
     return f"[{suffix}] Success: Saved {out_file.name}."
@@ -228,12 +257,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Policy: {args.overlap_policy}")
     print(f"Selected archives: {len(archives)}")
 
+    any_failed = False
     for archive in archives:
         result = process_archive_lazy(archive, args.symbol, args.output_dir)
         print(result)
+        if "Failed" in result:
+            any_failed = True
 
     print("\nTier-2 Cache Build Complete.")
-    return 0
+    return 1 if any_failed else 0
 
 
 if __name__ == "__main__":
