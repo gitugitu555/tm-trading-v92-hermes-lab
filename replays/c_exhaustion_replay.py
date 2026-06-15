@@ -1,40 +1,17 @@
-"""Deterministic replay for the V9.2 C_ExhaustionFade family.
-
-This module is intentionally pure:
-- no file writes
-- no cache updates
-- no production path access
-
-Replay semantics:
-- 750 BTC bars are expected, but any chronologically sorted bar frame with the
-  required columns is accepted.
-- Signals are generated past-only from the EXHAUSTED regime and the prior
-  rolling low.
-- Entry occurs at the next bar open after the signal bar closes.
-- Exit occurs at the next bar open after `horizon_bars` full bars have elapsed.
-- Only one position may be open at a time.
-- A flat round-trip cost is applied in basis points.
-"""
+"""Deterministic replay for the V9.2 C_ExhaustionFade family."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import polars as pl
 
-try:
-    from features.v92_data_policy import epoch_to_datetime_expr as _central_epoch_to_datetime_expr
-except Exception:  # Package init is not always safe in this repo.
-    _central_epoch_to_datetime_expr = None
-
-try:
-    from features.regime_classifier import add_regime_labels as _central_add_regime_labels
-except Exception:  # Package init is not always safe in this repo.
-    _central_add_regime_labels = None
+from features.regime_classifier import add_regime_labels as _central_regime_labels
+from features.v92_data_policy import epoch_to_datetime_expr as _central_epoch_to_datetime_expr
 
 __all__ = [
     "CExhaustionReplayConfig",
@@ -91,14 +68,7 @@ def _ensure_polars_frame(df: pl.DataFrame | pd.DataFrame) -> pl.DataFrame:
 
 
 def _normalize_epoch_expr(column: str) -> pl.Expr:
-    if _central_epoch_to_datetime_expr is not None:
-        return _central_epoch_to_datetime_expr(column)
-    return (
-        pl.when(pl.col(column) > 1e14)
-        .then(pl.from_epoch(column, time_unit="us"))
-        .otherwise(pl.from_epoch(column, time_unit="ms"))
-        .cast(pl.Datetime("ns"))
-    )
+    return _central_epoch_to_datetime_expr(column)
 
 
 def _normalize_bar_times(df: pl.DataFrame) -> pl.DataFrame:
@@ -120,71 +90,13 @@ def normalize_v92_bar_timestamps(df: pl.DataFrame) -> pl.DataFrame:
     return _normalize_bar_times(df)
 
 
-def _add_regime_labels(df: pl.DataFrame) -> pl.DataFrame:
-    """Local copy of the V9.2 regime labels without importing the broken package init.
-
-    This exists only to avoid package-init side effects. It must stay parity-aligned
-    with `features.regime_classifier.add_regime_labels`, and should be deleted once
-    the package import path is safe.
-    """
-    if _central_add_regime_labels is not None:
-        return _central_add_regime_labels(df)
-
-    if "bar_range" not in df.columns:
-        df = df.with_columns((pl.col("high") - pl.col("low")).alias("bar_range"))
-    if "body_size" not in df.columns:
-        df = df.with_columns((pl.col("close") - pl.col("open")).abs().alias("body_size"))
-
-    df = df.with_columns(
-        [
-            ((pl.col("close") - pl.col("open")).abs() / pl.col("volume_delta").abs().clip(lower_bound=1e-9)).alias(
-                "delta_efficiency"
-            )
-        ]
-    )
-
-    df = df.with_columns(
-        [
-            (pl.col("close") / pl.col("close").shift(1) - 1).rolling_std(window_size=500).shift(1).alias("rv_1d"),
-            pl.col("volume").rolling_quantile(quantile=0.80, interpolation="nearest", window_size=3500).shift(1).alias("vol_80th_pct"),
-            pl.col("delta_efficiency").rolling_median(window_size=200).shift(1).alias("de_median"),
-            pl.col("low").rolling_min(window_size=500).shift(1).alias("rolling_min_low"),
-            (pl.col("high") - pl.col("low")).rolling_mean(window_size=7000).shift(1).alias("rolling_mean_range"),
-        ]
-    )
-
-    df = df.with_columns(
-        [
-            pl.col("rv_1d").rolling_quantile(quantile=0.15, interpolation="nearest", window_size=15000).shift(1).alias(
-                "rv_15th_pct"
-            ),
-            ((pl.col("close") - pl.col("rolling_min_low")) / pl.col("rolling_mean_range")).alias("adr_stretch"),
-        ]
-    )
-
-    df = df.with_columns(
-        [
-            pl.when(pl.col("rv_1d") < pl.col("rv_15th_pct"))
-            .then(pl.lit("TREND_BUILDUP"))
-            .when(
-                (pl.col("volume") > pl.col("vol_80th_pct"))
-                & (pl.col("body_size") < (0.25 * pl.col("bar_range")))
-                & (pl.col("delta_efficiency") < pl.col("de_median"))
-            )
-            .then(pl.lit("ABSORPTION"))
-            .when((pl.col("adr_stretch") > 0.85) | (pl.col("adr_stretch") < 0.15))
-            .then(pl.lit("EXHAUSTED"))
-            .otherwise(pl.lit("NOISE"))
-            .alias("regime")
-        ]
-    )
-
-    return df.drop(["rv_1d", "vol_80th_pct", "rolling_min_low", "rolling_mean_range", "rv_15th_pct", "adr_stretch"])
-
-
 def add_v92_regime_labels(df: pl.DataFrame) -> pl.DataFrame:
-    """Public wrapper used by CLI and tests."""
-    return _add_regime_labels(df)
+    """Public wrapper — delegates directly to the canonical central classifier.
+
+    There is no fallback. If this import fails, the caller must fix the import
+    path; duplicating classifier logic is not acceptable.
+    """
+    return _central_regime_labels(df)
 
 
 def load_750btc_bars(bar_dir: Path) -> pl.DataFrame:
@@ -202,21 +114,12 @@ def attach_c_exhaustion_signal(
     signal_lookback_bars: int = 50,
     volume_lookback_bars: int = 1000,
 ) -> pl.DataFrame:
-    """Attach the past-only C signal used by the deterministic replay.
-
-    The signal matches the original Branch C research trigger:
-    - regime == EXHAUSTED
-    - volume > vol_roll_95
-    - close <= local_low
-
-    `local_low` is a shifted rolling low, while `vol_roll_95` is the rolling
-    95th percentile used by the research script. No future data is used.
-    """
+    """Attach the past-only C signal used by the deterministic replay."""
     frame = _ensure_polars_frame(df).sort("open_time")
     frame = _normalize_bar_times(frame)
 
     if "regime" not in frame.columns:
-        frame = _add_regime_labels(frame)
+        frame = add_v92_regime_labels(frame)
 
     required = {"open", "high", "low", "close", "volume", "regime", "open_time", "close_time"}
     missing = required.difference(frame.columns)
@@ -229,12 +132,16 @@ def attach_c_exhaustion_signal(
     frame = frame.with_columns(
         [
             pl.col("volume")
-            .rolling_quantile(quantile=0.95, interpolation="linear", window_size=volume_lookback_bars, min_samples=threshold_min_periods)
+            .rolling_quantile(
+                quantile=0.95,
+                interpolation="linear",
+                window_size=volume_lookback_bars,
+                min_samples=threshold_min_periods,
+            )
             .alias("vol_roll_95"),
-            pl.col("low")
-            .rolling_min(window_size=signal_lookback_bars, min_samples=structure_min_periods)
-            .shift(1)
-            .alias("local_low"),
+            pl.col("low").rolling_min(window_size=signal_lookback_bars, min_samples=structure_min_periods).shift(1).alias(
+                "local_low"
+            ),
         ]
     )
     frame = frame.with_columns(
@@ -303,8 +210,7 @@ def replay_c_exhaustionfade(
         signal_lookback_bars=signal_lookback_bars,
         volume_lookback_bars=volume_lookback_bars,
     )
-    pdf = frame.to_pandas()
-    pdf = pdf.sort_values("open_time").reset_index(drop=True)
+    pdf = frame.to_pandas().sort_values("open_time").reset_index(drop=True)
 
     trades: list[CExhaustionTrade] = []
     position_exit_index: int | None = None
@@ -390,7 +296,13 @@ def summarize_trades(trades: pd.DataFrame, *, cost_bps: float) -> dict[str, Any]
     running_max = equity_curve.cummax()
     drawdown = equity_curve - running_max
 
-    profit_factor = float(wins.sum() / abs(losses.sum())) if len(losses) > 0 and abs(losses.sum()) > 0 else float("inf") if len(wins) > 0 else 0.0
+    profit_factor = (
+        float(wins.sum() / abs(losses.sum()))
+        if len(losses) > 0 and abs(losses.sum()) > 0
+        else float("inf")
+        if len(wins) > 0
+        else 0.0
+    )
 
     return {
         "trade_count": int(len(trades)),
@@ -437,7 +349,13 @@ def year_split_metrics(trades: pd.DataFrame, *, cost_bps: float) -> pd.DataFrame
         equity_curve = net.cumsum()
         running_max = equity_curve.cummax()
         drawdown = equity_curve - running_max
-        profit_factor = float(wins.sum() / abs(losses.sum())) if len(losses) > 0 and abs(losses.sum()) > 0 else float("inf") if len(wins) > 0 else 0.0
+        profit_factor = (
+            float(wins.sum() / abs(losses.sum()))
+            if len(losses) > 0 and abs(losses.sum()) > 0
+            else float("inf")
+            if len(wins) > 0
+            else 0.0
+        )
         rows.append(
             {
                 "year": int(year),
