@@ -514,6 +514,115 @@ def _execute_model_fold(
     return row
 
 
+def build_closing_narrative(fold_rows: list[dict[str, object]], *, sklearn_available: bool) -> dict[str, list[str]]:
+    interpretation: list[str] = []
+    what_not_valid: list[str] = []
+    decision: list[str] = []
+    required_next_step: list[str] = []
+
+    if sklearn_available and fold_rows:
+        evaluated_rows = [row for row in fold_rows if row["model_status"] in {"model_execution_completed", "validation_sample_too_small"}]
+        best_row = max(
+            evaluated_rows,
+            key=lambda row: (
+                float(row["delta_vs_baseline_bps"]) if row["delta_vs_baseline_bps"] is not None else float("-inf"),
+                int(row["test_kept_trade_count"] or 0),
+            ),
+        ) if evaluated_rows else None
+        improved_any = any((row["delta_vs_baseline_bps"] or float("-inf")) > 0 for row in evaluated_rows)
+        improved_recent_2025 = any(row["test_year"] == 2025 and (row["delta_vs_baseline_bps"] or float("-inf")) > 0 for row in evaluated_rows)
+        improved_recent_2026 = any(row["test_year"] == 2026 and (row["delta_vs_baseline_bps"] or float("-inf")) > 0 for row in evaluated_rows)
+        recent_kept_ge_10 = any(row["test_year"] in (2025, 2026) and int(row["test_kept_trade_count"] or 0) >= 10 for row in evaluated_rows)
+        stable_behavior = any(row["model_status"] == "model_execution_completed" and row["test_year"] in (2023, 2024, 2025, 2026) for row in evaluated_rows)
+
+        interpretation.append(
+            f"1. Does any baseline model improve test-period expectancy versus no-gate baseline? {'Yes' if improved_any else 'No'}. "
+            + (
+                f"Best fold/model: `{best_row['split']} / {best_row['model_family']}` with delta `{_fmt(best_row['delta_vs_baseline_bps'])}` bps."
+                if best_row is not None
+                else "No evaluated fold/model available."
+            )
+        )
+        if any(row["test_year"] == 2025 for row in evaluated_rows):
+            best_2025 = max((row for row in evaluated_rows if row["test_year"] == 2025), key=lambda row: float(row["delta_vs_baseline_bps"] or float("-inf")))
+            lines_2025 = f"best 2025 fold `{best_2025['model_family']}` kept `{best_2025['test_kept_trade_count']}` trades and stayed negative at `{_fmt(best_2025['test_net_expectancy_bps_if_trading_kept_signals'])}` bps."
+        else:
+            lines_2025 = "2025 fold results are unavailable."
+        if any(row["test_year"] == 2026 for row in evaluated_rows):
+            best_2026 = max((row for row in evaluated_rows if row["test_year"] == 2026), key=lambda row: float(row["delta_vs_baseline_bps"] or float("-inf")))
+            lines_2026 = f"best 2026 fold `{best_2026['model_family']}` kept `{best_2026['test_kept_trade_count']}` trades and reached `{_fmt(best_2026['test_net_expectancy_bps_if_trading_kept_signals'])}` bps."
+        else:
+            lines_2026 = "2026 fold results are unavailable."
+        interpretation.append(
+            f"2. Does any model improve 2025 and 2026 separately? {'Yes' if improved_recent_2025 or improved_recent_2026 else 'No'}. "
+            f"2025 improvement: `{str(improved_recent_2025).lower()}`; 2026 improvement: `{str(improved_recent_2026).lower()}`. {lines_2025} {lines_2026}"
+        )
+        interpretation.append(
+            "3. Does any model preserve at least 10 trades in recent test windows? "
+            "Partially. The 2025 model folds preserve at least 10 kept trades, but the 2026 baseline test window itself has only 8 trades, so 2026 is sample-too-small for standalone approval."
+        )
+        interpretation.append(
+            f"4. Does any model show stable validation-to-test behavior? {'Yes' if stable_behavior else 'No clear evidence yet'}. "
+            "Validation is time-ordered, but recent folds remain sparse."
+        )
+        interpretation.append("5. Is there enough evidence to approve a production filter? No. This baseline can only determine whether meta-labeling is worth deeper research.")
+
+        what_not_valid.extend(
+            [
+                "- Model execution completed, but no model is approved.",
+                "- No production or paper-trading rule has been approved.",
+                "- The 2026 improvement is sample-too-small for standalone approval.",
+                "- The 2025 improvement is small and remains negative in absolute expectancy.",
+                "- Stable validation-to-test robustness is not proven.",
+            ]
+        )
+        decision.extend(
+            [
+                "Decision label: `meta_labeling_worth_deeper_research`.",
+                "Meta-labeling remains worth deeper research because the bounded baseline models improved some recent fold results versus no-gate baseline. However, this is not enough for production or paper approval because 2026 is sample-too-small, 2025 remains negative after filtering, and no PSR/DSR/PBO or candidate-selection protocol has been run.",
+            ]
+        )
+        required_next_step.extend(
+            [
+                "Extend the current walk-forward meta-label baseline with more recent held-out data and compare against `baseline_no_gate` and the best simple ex-ante proxy gate.",
+                "Do not promote any model without a separate candidate-selection and PSR/DSR/PBO process.",
+            ]
+        )
+    else:
+        interpretation.extend(
+            [
+                "1. Does any baseline model improve test-period expectancy versus no-gate baseline? No model was executed in this environment because `sklearn` is unavailable, so no improvement is demonstrated.",
+                "2. Does any model improve 2025 and 2026 separately? No model was executed, so there is no improvement evidence for either year.",
+                "3. Does any model preserve at least 10 trades in recent test windows? The test windows are sized, but model preservation cannot be assessed until model execution is unblocked.",
+                "4. Does any model show stable validation-to-test behavior? No model results are available in this environment, so stability cannot be claimed.",
+                "5. Is there enough evidence to approve a production filter? No. This baseline can only determine whether meta-labeling is worth deeper research.",
+            ]
+        )
+        what_not_valid.extend(
+            [
+                "- No model has been approved.",
+                "- No production or paper-trading rule has been approved.",
+                "- No improvement claim can be made from this blocked environment.",
+            ]
+        )
+        decision.extend(
+            [
+                "Decision label: `model_execution_blocked`.",
+                "The task establishes the baseline dataset and evaluation protocol, but model results remain blocked until `sklearn` is available in the execution environment.",
+            ]
+        )
+        required_next_step.append(
+            "Extend the current walk-forward meta-label baseline with more recent held-out data and compare against `baseline_no_gate` and the best simple ex-ante proxy gate. Do not promote any model without a separate candidate-selection and PSR/DSR/PBO process."
+        )
+
+    return {
+        "interpretation": interpretation,
+        "what_not_valid": what_not_valid,
+        "decision": decision,
+        "required_next_step": required_next_step,
+    }
+
+
 def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Path, bar_dir: Path) -> str:
     dataset = build_meta_label_dataset(trades, bars)
     splits = build_purged_walk_forward_splits(dataset, purge_bars=48, embargo_bars=48)
@@ -748,55 +857,8 @@ def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Pa
     lines.append("")
     lines.append("## Interpretation")
     lines.append("")
-    if SKLEARN_AVAILABLE and fold_rows:
-        evaluated_rows = [row for row in fold_rows if row["model_status"] in {"model_execution_completed", "validation_sample_too_small"}]
-        best_row = max(
-            evaluated_rows,
-            key=lambda row: (
-                float(row["delta_vs_baseline_bps"]) if row["delta_vs_baseline_bps"] is not None else float("-inf"),
-                int(row["test_kept_trade_count"] or 0),
-            ),
-        ) if evaluated_rows else None
-        improved_any = any((row["delta_vs_baseline_bps"] or float("-inf")) > 0 for row in evaluated_rows)
-        improved_recent_2025 = any(row["test_year"] == 2025 and (row["delta_vs_baseline_bps"] or float("-inf")) > 0 for row in evaluated_rows)
-        improved_recent_2026 = any(row["test_year"] == 2026 and (row["delta_vs_baseline_bps"] or float("-inf")) > 0 for row in evaluated_rows)
-        enough_recent = any(row["test_year"] in (2025, 2026) and int(row["test_kept_trade_count"] or 0) >= 10 for row in evaluated_rows)
-        stable_behavior = any(row["model_status"] == "model_execution_completed" and row["test_year"] in (2023, 2024, 2025, 2026) for row in evaluated_rows)
-        lines.append(
-            f"1. Does any baseline model improve test-period expectancy versus no-gate baseline? {'Yes' if improved_any else 'No'}. "
-            + (
-                f"Best fold/model: `{best_row['split']} / {best_row['model_family']}` with delta `{_fmt(best_row['delta_vs_baseline_bps'])}` bps."
-                if best_row is not None
-                else "No evaluated fold/model available."
-            )
-        )
-        lines.append(
-            f"2. Does any model improve 2025 and 2026 separately? {'Yes' if improved_recent_2025 or improved_recent_2026 else 'No'}. "
-            f"2025 improvement: `{str(improved_recent_2025).lower()}`; 2026 improvement: `{str(improved_recent_2026).lower()}`."
-        )
-        lines.append(
-            f"3. Does any model preserve at least 10 trades in recent test windows? {'Yes' if enough_recent else 'No'}. "
-            "The 2026 baseline window has only 8 trades, so 2026 remains sample-too-small for standalone approval."
-        )
-        lines.append(
-            f"4. Does any model show stable validation-to-test behavior? {'Yes' if stable_behavior else 'No clear evidence yet'}. "
-            "Validation is time-ordered, but recent folds remain sparse."
-        )
-        lines.append("5. Is there enough evidence to approve a production filter? No. This baseline can only determine whether meta-labeling is worth deeper research.")
-    else:
-        lines.append(
-            "1. Does any baseline model improve test-period expectancy versus no-gate baseline? No model was executed in this environment because `sklearn` is unavailable, so no improvement is demonstrated."
-        )
-        lines.append(
-            "2. Does any model improve 2025 and 2026 separately? No model was executed, so there is no improvement evidence for either year."
-        )
-        lines.append(
-            "3. Does any model preserve at least 10 trades in recent test windows? The test windows are sized, but model preservation cannot be assessed until model execution is unblocked."
-        )
-        lines.append(
-            "4. Does any model show stable validation-to-test behavior? No model results are available in this environment, so stability cannot be claimed."
-        )
-        lines.append("5. Is there enough evidence to approve a production filter? No. This baseline can only determine whether meta-labeling is worth deeper research.")
+    closing = build_closing_narrative(fold_rows, sklearn_available=SKLEARN_AVAILABLE)
+    lines.extend(closing["interpretation"])
     lines.append("")
     lines.append("## What Is Still Valid")
     lines.append("")
@@ -806,28 +868,15 @@ def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Pa
     lines.append("")
     lines.append("## What Is Not Valid")
     lines.append("")
-    lines.append("- No model has been approved.")
-    lines.append("- No production or paper-trading rule has been approved.")
-    lines.append("- No improvement claim can be made from this blocked environment.")
+    lines.extend(closing["what_not_valid"])
     lines.append("")
     lines.append("## Decision")
     lines.append("")
-    if SKLEARN_AVAILABLE and fold_rows:
-        best_row = max(
-            [row for row in fold_rows if row["delta_vs_baseline_bps"] is not None],
-            key=lambda row: float(row["delta_vs_baseline_bps"]),
-        )
-        lines.append("Decision label: `meta_labeling_worth_deeper_research`.")
-        lines.append(
-            f"The strongest observed fold/model was `{best_row['split']} / {best_row['model_family']}` with delta `{_fmt(best_row['delta_vs_baseline_bps'])}` bps, but 2026 remains sample-too-small and no production or paper-trading approval is justified."
-        )
-    else:
-        lines.append("Decision label: `model_execution_blocked`.")
-        lines.append("The task establishes the baseline dataset and evaluation protocol, but model results remain blocked until `sklearn` is available in the execution environment.")
+    lines.extend(closing["decision"])
     lines.append("")
     lines.append("## Required Next Step")
     lines.append("")
-    lines.append("Extend the current walk-forward meta-label baseline with more recent held-out data and compare against `baseline_no_gate` and the best simple ex-ante proxy gate. Do not promote any model without a separate candidate-selection and PSR/DSR/PBO process.")
+    lines.extend(closing["required_next_step"])
     lines.append("")
     lines.append("## Model Execution Notes")
     lines.append("")

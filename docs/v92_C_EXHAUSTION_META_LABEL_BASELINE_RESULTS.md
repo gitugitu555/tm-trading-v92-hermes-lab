@@ -144,8 +144,8 @@ Validation is time-ordered only with a conservative bar-index purge and embargo 
 ## Interpretation
 
 1. Does any baseline model improve test-period expectancy versus no-gate baseline? Yes. Best fold/model: `walk_forward_4 / decision_tree_depth_3` with delta `27.899317` bps.
-2. Does any model improve 2025 and 2026 separately? Yes. 2025 improvement: `true`; 2026 improvement: `true`.
-3. Does any model preserve at least 10 trades in recent test windows? Yes. The 2026 baseline window has only 8 trades, so 2026 remains sample-too-small for standalone approval.
+2. Does any model improve 2025 and 2026 separately? Yes. 2025 improvement: `true`; 2026 improvement: `true`. best 2025 fold `decision_tree_depth_2` kept `14` trades and stayed negative at `-144.965558` bps. best 2026 fold `decision_tree_depth_3` kept `7` trades and reached `9.637375` bps.
+3. Does any model preserve at least 10 trades in recent test windows? Partially. The 2025 model folds preserve at least 10 kept trades, but the 2026 baseline test window itself has only 8 trades, so 2026 is sample-too-small for standalone approval.
 4. Does any model show stable validation-to-test behavior? Yes. Validation is time-ordered, but recent folds remain sparse.
 5. Is there enough evidence to approve a production filter? No. This baseline can only determine whether meta-labeling is worth deeper research.
 
@@ -157,18 +157,21 @@ Validation is time-ordered only with a conservative bar-index purge and embargo 
 
 ## What Is Not Valid
 
-- No model has been approved.
+- Model execution completed, but no model is approved.
 - No production or paper-trading rule has been approved.
-- No improvement claim can be made from this blocked environment.
+- The 2026 improvement is sample-too-small for standalone approval.
+- The 2025 improvement is small and remains negative in absolute expectancy.
+- Stable validation-to-test robustness is not proven.
 
 ## Decision
 
 Decision label: `meta_labeling_worth_deeper_research`.
-The strongest observed fold/model was `walk_forward_4 / decision_tree_depth_3` with delta `27.899317` bps, but 2026 remains sample-too-small and no production or paper-trading approval is justified.
+Meta-labeling remains worth deeper research because the bounded baseline models improved some recent fold results versus no-gate baseline. However, this is not enough for production or paper approval because 2026 is sample-too-small, 2025 remains negative after filtering, and no PSR/DSR/PBO or candidate-selection protocol has been run.
 
 ## Required Next Step
 
-Extend the current walk-forward meta-label baseline with more recent held-out data and compare against `baseline_no_gate` and the best simple ex-ante proxy gate. Do not promote any model without a separate candidate-selection and PSR/DSR/PBO process.
+Extend the current walk-forward meta-label baseline with more recent held-out data and compare against `baseline_no_gate` and the best simple ex-ante proxy gate.
+Do not promote any model without a separate candidate-selection and PSR/DSR/PBO process.
 
 ## Model Execution Notes
 

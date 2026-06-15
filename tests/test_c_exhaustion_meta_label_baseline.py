@@ -144,3 +144,35 @@ def test_purged_split_counts_are_conservative():
         assert split["validate_count"] >= 0
         assert split["test_count"] >= 0
         assert split["train_count"] + split["validate_count"] + split["test_count"] <= len(frame)
+
+
+def test_closing_narrative_matches_evaluated_model_run():
+    fold_rows = [
+        {
+            "model_status": "model_execution_completed",
+            "test_year": 2025,
+            "test_kept_trade_count": 14,
+            "delta_vs_baseline_bps": 6.332226,
+            "split": "walk_forward_3",
+            "model_family": "decision_tree_depth_2",
+            "test_net_expectancy_bps_if_trading_kept_signals": -144.965558,
+        },
+        {
+            "model_status": "model_execution_completed",
+            "test_year": 2026,
+            "test_kept_trade_count": 7,
+            "delta_vs_baseline_bps": 27.899317,
+            "split": "walk_forward_4",
+            "model_family": "decision_tree_depth_3",
+            "test_net_expectancy_bps_if_trading_kept_signals": 9.637375,
+        },
+    ]
+
+    closing = meta.build_closing_narrative(fold_rows, sklearn_available=True)
+    rendered = "\n".join(closing["interpretation"] + closing["what_not_valid"] + closing["decision"])
+
+    assert "blocked environment" not in rendered
+    assert "No improvement claim can be made from this blocked environment" not in rendered
+    assert "blocked_missing_sklearn" not in rendered
+    assert "Partially. The 2025 model folds preserve at least 10 kept trades" in rendered
+    assert "Decision label: `meta_labeling_worth_deeper_research`." in rendered
