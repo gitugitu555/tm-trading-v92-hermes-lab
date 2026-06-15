@@ -5,4 +5,5 @@ pyarrow
 numba
 zstandard
 pytest
+sortedcontainers>=2.4,<3
 scikit-learn>=1.4,<2
