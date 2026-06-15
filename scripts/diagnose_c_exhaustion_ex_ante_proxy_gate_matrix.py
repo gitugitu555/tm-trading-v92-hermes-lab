@@ -75,13 +75,9 @@ def _safe_mean(series: pd.Series) -> float:
     return float(valid.mean()) if not valid.empty else 0.0
 
 
-def _trade_summary(df: pd.DataFrame) -> dict[str, object]:
+def _metric_summary(df: pd.DataFrame) -> dict[str, object]:
     if df.empty:
         return {
-            "input_trade_count": 0,
-            "kept_trade_count": 0,
-            "removed_trade_count": 0,
-            "kept_rate": 0.0,
             "net_expectancy_bps": 0.0,
             "win_rate": 0.0,
             "profit_factor": 0.0,
@@ -97,7 +93,6 @@ def _trade_summary(df: pd.DataFrame) -> dict[str, object]:
             "bad_context_rate_36": 0.0,
             "trend_continuation_rate_36": 0.0,
             "failed_reversal_rate_36": 0.0,
-            "bad_context_reduction_vs_baseline": 0.0,
         }
 
     net = df["net_return_bps"].astype(float)
@@ -107,10 +102,6 @@ def _trade_summary(df: pd.DataFrame) -> dict[str, object]:
     trend_36 = df["trend_continuation_flag_36"].fillna(False).astype(bool)
     failed_36 = df["failed_reversal_flag_36"].fillna(False).astype(bool)
     return {
-        "input_trade_count": int(len(df)),
-        "kept_trade_count": int(len(df)),
-        "removed_trade_count": 0,
-        "kept_rate": 1.0,
         "net_expectancy_bps": float(net.mean()),
         "win_rate": float((net > 0.0).mean()),
         "profit_factor": _safe_profit_factor(net),
@@ -126,7 +117,25 @@ def _trade_summary(df: pd.DataFrame) -> dict[str, object]:
         "bad_context_rate_36": float(bad_context.mean()) if len(bad_context) else 0.0,
         "trend_continuation_rate_36": float(trend_36.mean()) if len(trend_36) else 0.0,
         "failed_reversal_rate_36": float(failed_36.mean()) if len(failed_36) else 0.0,
-        "bad_context_reduction_vs_baseline": 0.0,
+    }
+
+
+def summarize_candidate_period(input_df: pd.DataFrame, candidate: str, *, period: str) -> dict[str, object]:
+    """Summarize a candidate gate on an input trade population before filtering."""
+
+    kept_df = input_df if candidate == "baseline_no_gate" else input_df[_apply_gate(input_df, candidate)].copy()
+    summary = _metric_summary(kept_df)
+    input_trade_count = int(len(input_df))
+    kept_trade_count = int(len(kept_df))
+    return {
+        "candidate": candidate,
+        "family": _candidate_family(candidate),
+        "period": period,
+        "input_trade_count": input_trade_count,
+        "kept_trade_count": kept_trade_count,
+        "removed_trade_count": input_trade_count - kept_trade_count,
+        "kept_rate": float(kept_trade_count / input_trade_count) if input_trade_count else 0.0,
+        **summary,
     }
 
 
@@ -348,99 +357,61 @@ def _candidate_list() -> list[str]:
 def _all_period_rows(df: pd.DataFrame, candidates: list[str]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for candidate in candidates:
-        kept = df[_apply_gate(df, candidate)].copy()
-        summary = _trade_summary(kept)
-        rows.append(
-            {
-                "candidate": candidate,
-                "family": _candidate_family(candidate),
-                "period": "all_period",
-                "input_trade_count": int(len(df)),
-                "kept_trade_count": int(len(kept)),
-                "removed_trade_count": int(len(df) - len(kept)),
-                "kept_rate": float(len(kept) / len(df)) if len(df) else 0.0,
-                **summary,
-            }
-        )
+        rows.append(summarize_candidate_period(df, candidate, period="all_period"))
     return rows
 
 
 def _period_rows(df: pd.DataFrame, candidates: list[str]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for candidate in candidates:
-        candidate_rows: list[dict[str, object]] = []
         for period, (start_year, end_year) in PERIOD_BOUNDS.items():
             input_df = _period_slice(df, start_year, end_year)
-            kept_df = input_df[_apply_gate(input_df, candidate)].copy()
-            summary = _trade_summary(kept_df)
-            candidate_rows.append(
-                {
-                    "candidate": candidate,
-                    "family": _candidate_family(candidate),
-                    "period": period,
-                    "input_trade_count": int(len(input_df)),
-                    "kept_trade_count": int(len(kept_df)),
-                    "removed_trade_count": int(len(input_df) - len(kept_df)),
-                    "kept_rate": float(len(kept_df) / len(input_df)) if len(input_df) else 0.0,
-                    **summary,
-                }
-            )
-        baseline_rate = next(row["bad_context_rate_36"] for row in candidate_rows if row["period"] == "all_period") if False else None
-        rows.extend(candidate_rows)
+            rows.append(summarize_candidate_period(input_df, candidate, period=period))
     return rows
 
 
-def _augment_candidate_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+def compute_stability_flags(period_rows: list[dict[str, object]]) -> dict[str, object]:
+    period_map = {row["period"]: row for row in period_rows}
+    early_positive = float(period_map["early_period"]["net_expectancy_bps"]) > 0.0
+    middle_positive = float(period_map["middle_period"]["net_expectancy_bps"]) > 0.0
+    recent_positive = float(period_map["recent_period"]["net_expectancy_bps"]) > 0.0
+    min_period_trade_count = min(int(period_map[period]["kept_trade_count"]) for period in PERIOD_BOUNDS)
+    return {
+        "early_positive": early_positive,
+        "middle_positive": middle_positive,
+        "recent_positive": recent_positive,
+        "positive_all_periods": early_positive and middle_positive and recent_positive,
+        "min_period_trade_count": min_period_trade_count,
+        "sample_too_small": min_period_trade_count < 10,
+    }
+
+
+def _attach_baseline_reduction(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    lookup: dict[tuple[str, str], dict[str, object]] = {(row["candidate"], row["period"]): row for row in rows}
     out: list[dict[str, object]] = []
-    lookup: dict[str, dict[str, object]] = {}
     for row in rows:
-        lookup.setdefault(row["candidate"], {})[row["period"]] = row
-    for row in rows:
-        baseline_row = lookup.get("baseline_no_gate", {}).get(row["period"])
+        baseline_row = lookup.get(("baseline_no_gate", row["period"]))
         baseline_bad = float(baseline_row["bad_context_rate_36"]) if baseline_row is not None else 0.0
+        row = dict(row)
         row["bad_context_reduction_vs_baseline"] = baseline_bad - float(row["bad_context_rate_36"])
-        row["early_positive"] = False
-        row["middle_positive"] = False
-        row["recent_positive"] = False
-        row["positive_all_periods"] = False
-        row["min_period_trade_count"] = 0
-        row["sample_too_small"] = False
         out.append(row)
-    # Add stability flags to the all-period and period views per candidate.
-    candidate_lookup: dict[str, list[dict[str, object]]] = {}
-    for row in out:
-        candidate_lookup.setdefault(row["candidate"], []).append(row)
-    for candidate, cand_rows in candidate_lookup.items():
-        period_map = {r["period"]: r for r in cand_rows}
-        early_positive = float(period_map["early_period"]["net_expectancy_bps"]) > 0.0
-        middle_positive = float(period_map["middle_period"]["net_expectancy_bps"]) > 0.0
-        recent_positive = float(period_map["recent_period"]["net_expectancy_bps"]) > 0.0
-        positive_all = early_positive and middle_positive and recent_positive
-        min_kept = min(int(period_map[p]["kept_trade_count"]) for p in PERIOD_BOUNDS)
-        sample_too_small = min_kept < 10
-        for r in cand_rows:
-            r["early_positive"] = early_positive
-            r["middle_positive"] = middle_positive
-            r["recent_positive"] = recent_positive
-            r["positive_all_periods"] = positive_all
-            r["min_period_trade_count"] = min_kept
-            r["sample_too_small"] = sample_too_small
     return out
 
 
+def rank_candidates(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    return sorted(rows, key=_ranking_key)
+
+
 def _ranking_key(row: dict[str, object]) -> tuple:
+    recent_net = float(row.get("recent_net_expectancy_bps", row.get("net_expectancy_bps", 0.0)))
     return (
         -int(bool(row["positive_all_periods"])),
         -int(bool(row["recent_positive"])),
         int(bool(row["sample_too_small"])),
         -float(row["bad_context_reduction_vs_baseline"]),
-        -float(row["recent_net_expectancy_bps"]),
+        -recent_net,
         -float(row["net_expectancy_bps"]),
     )
-
-
-def _period_lookup(rows: list[dict[str, object]], period: str) -> dict[str, dict[str, object]]:
-    return {row["candidate"]: row for row in rows if row["period"] == period}
 
 
 def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Path, bar_dir: Path) -> str:
@@ -471,38 +442,27 @@ def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Pa
     ) if c not in context.columns]
 
     candidates = _candidate_list()
-    all_period_rows = _all_period_rows(context, candidates)
-    period_rows = _period_rows(context, candidates)
-    period_rows = _augment_candidate_rows(period_rows)
-
+    all_period_rows = _attach_baseline_reduction(_all_period_rows(context, candidates))
+    period_rows = _attach_baseline_reduction(_period_rows(context, candidates))
     baseline_all = next(row for row in all_period_rows if row["candidate"] == "baseline_no_gate")
-    # Recompute reductions using period-specific baseline rows.
-    for row in all_period_rows:
-        row["bad_context_reduction_vs_baseline"] = float(baseline_all["bad_context_rate_36"]) - float(row["bad_context_rate_36"])
-    for row in period_rows:
-        period_base = _period_lookup(period_rows, row["period"]).get("baseline_no_gate")
-        base_rate = float(period_base["bad_context_rate_36"]) if period_base is not None else 0.0
-        row["bad_context_reduction_vs_baseline"] = base_rate - float(row["bad_context_rate_36"])
 
-    # refresh stability flags on all-period rows from period rows
-    per_candidate_period_rows: dict[str, dict[str, dict[str, object]]] = {}
-    for candidate in candidates:
-        per_candidate_period_rows[candidate] = {r["period"]: r for r in period_rows if r["candidate"] == candidate}
+    per_candidate_period_rows: dict[str, dict[str, dict[str, object]]] = {
+        candidate: {row["period"]: row for row in period_rows if row["candidate"] == candidate}
+        for candidate in candidates
+    }
     for row in all_period_rows:
         per_period = per_candidate_period_rows[row["candidate"]]
-        row["early_positive"] = float(per_period["early_period"]["net_expectancy_bps"]) > 0.0
-        row["middle_positive"] = float(per_period["middle_period"]["net_expectancy_bps"]) > 0.0
-        row["recent_positive"] = float(per_period["recent_period"]["net_expectancy_bps"]) > 0.0
-        row["positive_all_periods"] = row["early_positive"] and row["middle_positive"] and row["recent_positive"]
-        row["min_period_trade_count"] = min(int(per_period[p]["kept_trade_count"]) for p in PERIOD_BOUNDS)
-        row["sample_too_small"] = row["min_period_trade_count"] < 10
+        stability = compute_stability_flags(list(per_period.values()))
+        row.update(stability)
         row["early_net_expectancy_bps"] = float(per_period["early_period"]["net_expectancy_bps"])
         row["middle_net_expectancy_bps"] = float(per_period["middle_period"]["net_expectancy_bps"])
         row["recent_net_expectancy_bps"] = float(per_period["recent_period"]["net_expectancy_bps"])
 
-    all_period_rows_sorted = sorted(all_period_rows, key=_ranking_key)
+    all_period_rows_sorted = rank_candidates(all_period_rows)
     ranked_top = all_period_rows_sorted[:20]
     recent_rows = [row for row in period_rows if row["period"] == "recent_period"]
+    positive_recent_candidates = [row["candidate"] for row in all_period_rows_sorted if bool(row["recent_positive"])]
+    positive_all_candidates = [row["candidate"] for row in all_period_rows_sorted if bool(row["positive_all_periods"])]
 
     lines: list[str] = []
     lines.append("# C_ExhaustionFade Ex-Ante Proxy Gate Matrix")
@@ -674,12 +634,22 @@ def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Pa
     lines.append("")
     lines.append("## Interpretation")
     lines.append("")
-    lines.append(
-        "1. Does any ex-ante proxy gate restore recent-period positive expectancy? Yes. Several pre-signal proxy gates recover recent positivity, with the strongest being the trend-avoiding pre-signal return and range/body combinations."
-    )
-    lines.append(
-        "2. Does any candidate remain positive across early, middle, and recent periods? Some candidates do, but they still require walk-forward validation and cannot be treated as production filters."
-    )
+    if positive_recent_candidates:
+        candidate_summaries = []
+        for candidate in positive_recent_candidates[:3]:
+            row = next(row for row in all_period_rows_sorted if row["candidate"] == candidate)
+            candidate_summaries.append(
+                f"{candidate} (early={_fmt(row['early_net_expectancy_bps'])}, middle={_fmt(row['middle_net_expectancy_bps'])}, recent={_fmt(row['recent_net_expectancy_bps'])})"
+            )
+        recent_statement = "Yes. " + "; ".join(candidate_summaries) + "."
+    else:
+        recent_statement = "No. No pre-registered ex-ante proxy gate restored recent-period positive expectancy."
+    lines.append(f"1. Does any ex-ante proxy gate restore recent-period positive expectancy? {recent_statement}")
+    if positive_all_candidates:
+        all_period_statement = "Yes. " + ", ".join(positive_all_candidates[:5]) + "."
+    else:
+        all_period_statement = "No. No candidate remained positive across early, middle, and recent periods."
+    lines.append(f"2. Does any candidate remain positive across early, middle, and recent periods? {all_period_statement}")
     lines.append(
         "3. Does any ex-ante gate reduce the 36-bar bad-context label rate? Yes. The proxy gates with the largest bad-context reductions are the ones that avoid severe pre-signal weakness and wide/large-body signal bars."
     )
@@ -699,6 +669,7 @@ def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Pa
     lines.append("")
     lines.append("- No proxy gate is production-approved.")
     lines.append("- No proxy gate should be used as a live or paper filter based on this report alone.")
+    lines.append("- The earlier narrative claim that ex-ante gates restored recent-period positive expectancy was incorrect; the recomputed table does not support that claim.")
     lines.append("- Any apparent improvement could still be sample-specific and must not be treated as evidence of robustness.")
     lines.append("")
     lines.append("## Required Next Research")
