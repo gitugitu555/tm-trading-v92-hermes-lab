@@ -1,7 +1,9 @@
 # C_ExhaustionFade Post-Regime-Fix Anchor Diagnostics
 
 Source artifacts:
-- [`reports/c_exhaustion_replay_post_regime_fix`](/home/tokio/tm-trading-v92-core/reports/c_exhaustion_replay_post_regime_fix)
+- `reports/c_exhaustion_replay_post_regime_fix/`
+
+The report values were generated from local replay artifacts. The reports/ directory is not committed to the repository.
 
 ## Anchor Comparison
 
@@ -36,6 +38,10 @@ The old 221-trade anchor is invalid as a same-signal benchmark. The post-fix rep
 | 2024 | 26 | 125.606331 | 113.606331 | 0.692308 | 2.679255 | -554.112151 |
 | 2025 | 16 | -148.751555 | -160.751555 | 0.250000 | 0.082751 | -2460.176205 |
 | 2026 | 9 | -4.282152 | -16.282152 | 0.555556 | 0.806392 | -540.865433 |
+
+## Stability Warning
+
+The edge is not stable across the full period. 2025 and 2026 are negative after costs, with 2025 showing severe degradation. This anchor is therefore research-valid but not production-valid. No live, paper-production, or sizing decision should be made until recent-period decay is explained.
 
 ## Monthly Breakdown
 
@@ -171,13 +177,15 @@ The old 221-trade anchor is invalid as a same-signal benchmark. The post-fix rep
 
 | metric | value |
 |---|---:|
-| starting_equity | 98185.179682 |
+| first_recorded_calendar_equity | 98185.179682 |
 | ending_equity | 236409.629056 |
 | max_drawdown_pct | 11.154946 |
 | max_drawdown_date | 2026-03-19 |
 | equity_at_drawdown_peak | 263595.271496 |
 | equity_at_drawdown_trough | 234191.361025 |
 | peak_to_end_drawdown_pct | -10.313403 |
+
+The configured replay starting equity was 100000. The first recorded calendar equity reflects the first realized daily equity point after replay exits are applied.
 
 ## Research Note
 
