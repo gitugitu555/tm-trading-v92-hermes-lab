@@ -24,7 +24,11 @@ import polars as pl
 from scripts.diagnose_c_exhaustion_regime_context import _compute_trade_context
 from replays.c_exhaustion_replay import add_v92_regime_labels, load_750btc_bars, normalize_v92_bar_timestamps
 
-SKLEARN_AVAILABLE = importlib.util.find_spec("sklearn") is not None
+def check_sklearn_available() -> bool:
+    return importlib.util.find_spec("sklearn") is not None
+
+
+SKLEARN_AVAILABLE = check_sklearn_available()
 
 ALLOWED_FEATURES = [
     "pre_signal_return_12_bars_bps",
@@ -183,45 +187,11 @@ def summarize_keep_remove_counts(test_count: int, kept_count: int) -> dict[str, 
     }
 
 
-def select_validation_threshold(y_true: np.ndarray, y_score: np.ndarray) -> float:
-    y_true = np.asarray(y_true, dtype=int)
-    y_score = np.asarray(y_score, dtype=float)
-    if y_true.size == 0:
-        return 0.5
-
-    thresholds = np.unique(np.concatenate(([0.0, 0.5, 1.0], y_score)))
-    best_threshold = 0.5
-    best_key = (-1.0, -1.0, -1.0)
-    for threshold in thresholds:
-        pred = y_score >= threshold
-        tp = int(((pred == 1) & (y_true == 1)).sum())
-        fp = int(((pred == 1) & (y_true == 0)).sum())
-        fn = int(((pred == 0) & (y_true == 1)).sum())
-        precision = tp / (tp + fp) if (tp + fp) else 0.0
-        recall = tp / (tp + fn) if (tp + fn) else 0.0
-        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
-        key = (f1, precision, -float(threshold))
-        if key > best_key:
-            best_key = key
-            best_threshold = float(threshold)
-    return best_threshold
+def _threshold_grid() -> np.ndarray:
+    return np.array([0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70], dtype=float)
 
 
-def _roc_auc_score(y_true: np.ndarray, y_score: np.ndarray) -> float | None:
-    y_true = np.asarray(y_true, dtype=int)
-    y_score = np.asarray(y_score, dtype=float)
-    pos = int((y_true == 1).sum())
-    neg = int((y_true == 0).sum())
-    if pos == 0 or neg == 0:
-        return None
-    order = np.argsort(y_score)
-    ranks = np.empty_like(order, dtype=float)
-    ranks[order] = np.arange(1, len(y_score) + 1, dtype=float)
-    rank_sum = float(ranks[y_true == 1].sum())
-    return (rank_sum - pos * (pos + 1) / 2.0) / (pos * neg)
-
-
-def _binary_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
+def _classification_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     y_true = np.asarray(y_true, dtype=int)
     y_pred = np.asarray(y_pred, dtype=int)
     tp = int(((y_true == 1) & (y_pred == 1)).sum())
@@ -240,18 +210,7 @@ def _binary_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     }
 
 
-def _safe_profit_factor(net: pd.Series) -> float:
-    wins = net[net > 0.0]
-    losses = net[net < 0.0]
-    if len(wins) == 0 and len(losses) == 0:
-        return 0.0
-    loss_sum = float(losses.sum()) if len(losses) else 0.0
-    if len(losses) and abs(loss_sum) > 0.0:
-        return float(wins.sum() / abs(loss_sum))
-    return float("inf") if len(wins) else 0.0
-
-
-def _trade_financial_metrics(df: pd.DataFrame) -> dict[str, object]:
+def _trade_metrics_from_frame(df: pd.DataFrame) -> dict[str, float]:
     if df.empty:
         return {
             "net_expectancy_bps": 0.0,
@@ -264,6 +223,110 @@ def _trade_financial_metrics(df: pd.DataFrame) -> dict[str, object]:
         "win_rate": float((net > 0.0).mean()),
         "profit_factor": _safe_profit_factor(net),
     }
+
+
+def _safe_profit_factor(net: pd.Series) -> float:
+    wins = net[net > 0.0]
+    losses = net[net < 0.0]
+    if len(wins) == 0 and len(losses) == 0:
+        return 0.0
+    loss_sum = float(losses.sum()) if len(losses) else 0.0
+    if len(losses) and abs(loss_sum) > 0.0:
+        return float(wins.sum() / abs(loss_sum))
+    return float("inf") if len(wins) else 0.0
+
+
+def fit_preprocessors(train_df: pd.DataFrame, *, feature_names: list[str], model_family: str):
+    if not SKLEARN_AVAILABLE:
+        raise RuntimeError("sklearn is not available")
+    from sklearn.impute import SimpleImputer
+
+    imputer = SimpleImputer(strategy="median")
+    imputer.fit(train_df[feature_names].astype(float))
+
+    scaler = None
+    if model_family == "logistic_regression_l2":
+        from sklearn.preprocessing import StandardScaler
+
+        scaler = StandardScaler()
+        scaler.fit(imputer.transform(train_df[feature_names].astype(float)))
+    return imputer, scaler
+
+
+def transform_features(df: pd.DataFrame, *, feature_names: list[str], imputer, scaler=None) -> np.ndarray:
+    values = imputer.transform(df[feature_names].astype(float))
+    if scaler is not None:
+        values = scaler.transform(values)
+    return values
+
+
+def evaluate_threshold_candidates(
+    validate_df: pd.DataFrame,
+    validate_scores: np.ndarray,
+    *,
+    thresholds: np.ndarray | None = None,
+) -> list[dict[str, object]]:
+    thresholds = _threshold_grid() if thresholds is None else np.asarray(thresholds, dtype=float)
+    rows: list[dict[str, object]] = []
+    y_true = validate_df["label_trade_win"].astype(int).to_numpy()
+    net = validate_df["net_return_bps"].astype(float).to_numpy()
+    for threshold in thresholds:
+        keep = validate_scores >= threshold
+        kept_count = int(keep.sum())
+        kept_net = net[keep]
+        summary = {
+            "threshold": float(threshold),
+            "validate_kept_trade_count": kept_count,
+            "validate_removed_trade_count": int(len(validate_df) - kept_count),
+            "validate_kept_rate": float(kept_count / len(validate_df)) if len(validate_df) else 0.0,
+            "validate_net_expectancy_bps_if_trading_kept_signals": float(kept_net.mean()) if kept_count else float("-inf"),
+            "validate_win_rate_if_trading_kept_signals": float((kept_net > 0.0).mean()) if kept_count else 0.0,
+            "validate_profit_factor_if_trading_kept_signals": _safe_profit_factor(pd.Series(kept_net)) if kept_count else 0.0,
+            **_classification_metrics(y_true, keep.astype(int)),
+        }
+        rows.append(summary)
+    return rows
+
+
+def select_validation_threshold(
+    validate_df: pd.DataFrame,
+    validate_scores: np.ndarray,
+    *,
+    thresholds: np.ndarray | None = None,
+) -> dict[str, object]:
+    rows = evaluate_threshold_candidates(validate_df, validate_scores, thresholds=thresholds)
+    qualifying = [row for row in rows if row["validate_kept_trade_count"] >= 10]
+    candidates = qualifying or rows
+    best = max(
+        candidates,
+        key=lambda row: (
+            row["validate_net_expectancy_bps_if_trading_kept_signals"],
+            row["validate_kept_trade_count"] >= 10,
+            row["validate_win_rate_if_trading_kept_signals"],
+            row["validate_profit_factor_if_trading_kept_signals"],
+            row["threshold"],
+        ),
+    )
+    return {
+        "selected_threshold": float(best["threshold"]),
+        "validation_sample_too_small": len(qualifying) == 0,
+        "best_available_threshold_diagnostic_only": float(best["threshold"]),
+        "threshold_rows": rows,
+    }
+
+
+def _roc_auc_score(y_true: np.ndarray, y_score: np.ndarray) -> float | None:
+    y_true = np.asarray(y_true, dtype=int)
+    y_score = np.asarray(y_score, dtype=float)
+    pos = int((y_true == 1).sum())
+    neg = int((y_true == 0).sum())
+    if pos == 0 or neg == 0:
+        return None
+    order = np.argsort(y_score)
+    ranks = np.empty_like(order, dtype=float)
+    ranks[order] = np.arange(1, len(y_score) + 1, dtype=float)
+    rank_sum = float(ranks[y_true == 1].sum())
+    return (rank_sum - pos * (pos + 1) / 2.0) / (pos * neg)
 
 
 def _period_slice(df: pd.DataFrame, years: Iterable[int]) -> pd.DataFrame:
@@ -323,7 +386,22 @@ def _prepare_xy(df: pd.DataFrame, features: list[str]) -> tuple[pd.DataFrame, pd
     return X, y
 
 
-def _train_and_evaluate_if_possible(
+def _summarize_threshold_row(row: dict[str, object]) -> dict[str, object]:
+    return {
+        "selected_threshold": row["threshold"],
+        "validate_kept_trade_count": row["validate_kept_trade_count"],
+        "validate_removed_trade_count": row["validate_removed_trade_count"],
+        "validate_kept_rate": row["validate_kept_rate"],
+        "validate_net_expectancy_bps_if_trading_kept_signals": row["validate_net_expectancy_bps_if_trading_kept_signals"],
+        "validate_win_rate_if_trading_kept_signals": row["validate_win_rate_if_trading_kept_signals"],
+        "validate_profit_factor_if_trading_kept_signals": row["validate_profit_factor_if_trading_kept_signals"],
+        "validate_precision": row["precision"],
+        "validate_recall": row["recall"],
+        "validate_f1": row["f1"],
+    }
+
+
+def _execute_model_fold(
     model_name: str,
     train_df: pd.DataFrame,
     validate_df: pd.DataFrame,
@@ -334,6 +412,8 @@ def _train_and_evaluate_if_possible(
     row: dict[str, object] = {
         "model_family": model_name,
         "model_status": "blocked_missing_sklearn",
+        "validation_sample_too_small": None,
+        "best_available_threshold_diagnostic_only": None,
         "selected_threshold": None,
         "validate_precision": None,
         "validate_recall": None,
@@ -356,59 +436,55 @@ def _train_and_evaluate_if_possible(
     if not SKLEARN_AVAILABLE:
         return row
 
-    from sklearn.impute import SimpleImputer
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.pipeline import Pipeline
-    from sklearn.tree import DecisionTreeClassifier
-
     X_train, y_train = _prepare_xy(train_df, ALLOWED_FEATURES)
     X_validate, y_validate = _prepare_xy(validate_df, ALLOWED_FEATURES)
     X_test, y_test = _prepare_xy(test_df, ALLOWED_FEATURES)
-
-    if model_name == "logistic_regression_l2":
-        model = Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="median")),
-                ("model", LogisticRegression(max_iter=1000, penalty="l2", solver="liblinear")),
-            ]
-        )
-    elif model_name == "decision_tree_depth_2":
-        model = Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="median")),
-                ("model", DecisionTreeClassifier(max_depth=2, random_state=42)),
-            ]
-        )
-    elif model_name == "decision_tree_depth_3":
-        model = Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="median")),
-                ("model", DecisionTreeClassifier(max_depth=3, random_state=42)),
-            ]
-        )
-    else:
-        raise ValueError(f"Unknown model family: {model_name}")
 
     if y_train.nunique() < 2 or y_validate.nunique() < 2 or y_test.nunique() < 2:
         row["model_status"] = "blocked_single_class_split"
         return row
 
-    model.fit(X_train, y_train)
-    validate_scores = model.predict_proba(X_validate)[:, 1]
-    threshold = select_validation_threshold(y_validate.to_numpy(), validate_scores)
-    test_scores = model.predict_proba(X_test)[:, 1]
+    imputer, scaler = fit_preprocessors(train_df, feature_names=ALLOWED_FEATURES, model_family=model_name)
+    X_train_trans = transform_features(train_df, feature_names=ALLOWED_FEATURES, imputer=imputer, scaler=scaler)
+    X_validate_trans = transform_features(validate_df, feature_names=ALLOWED_FEATURES, imputer=imputer, scaler=scaler)
+    X_test_trans = transform_features(test_df, feature_names=ALLOWED_FEATURES, imputer=imputer, scaler=scaler)
+
+    if model_name == "logistic_regression_l2":
+        from sklearn.linear_model import LogisticRegression
+
+        model = LogisticRegression(max_iter=1000, penalty="l2", solver="liblinear", random_state=42)
+    elif model_name == "decision_tree_depth_2":
+        from sklearn.tree import DecisionTreeClassifier
+
+        model = DecisionTreeClassifier(max_depth=2, random_state=42)
+    elif model_name == "decision_tree_depth_3":
+        from sklearn.tree import DecisionTreeClassifier
+
+        model = DecisionTreeClassifier(max_depth=3, random_state=42)
+    else:
+        raise ValueError(f"Unknown model family: {model_name}")
+
+    model.fit(X_train_trans, y_train)
+    validate_scores = model.predict_proba(X_validate_trans)[:, 1]
+    threshold_result = select_validation_threshold(validate_df, validate_scores)
+    threshold = float(threshold_result["selected_threshold"])
+    test_scores = model.predict_proba(X_test_trans)[:, 1]
     test_keep = test_scores >= threshold
     test_pred = test_keep.astype(int)
     validate_pred = (validate_scores >= threshold).astype(int)
 
-    validate_metrics = _binary_metrics(y_validate.to_numpy(), validate_pred)
-    test_metrics = _binary_metrics(y_test.to_numpy(), test_pred)
+    validate_metrics = _classification_metrics(y_validate.to_numpy(), validate_pred)
+    test_metrics = _classification_metrics(y_test.to_numpy(), test_pred)
     kept_df = test_df.loc[test_keep].copy()
-    kept_financial = _trade_financial_metrics(kept_df)
+    kept_financial = _trade_metrics_from_frame(kept_df)
+    validation_kept_df = validate_df.loc[validate_scores >= threshold].copy()
+    validation_kept_financial = _trade_metrics_from_frame(validation_kept_df)
 
     row.update(
         {
-            "model_status": "evaluated",
+            "model_status": "validation_sample_too_small" if threshold_result["validation_sample_too_small"] else "model_execution_completed",
+            "validation_sample_too_small": bool(threshold_result["validation_sample_too_small"]),
+            "best_available_threshold_diagnostic_only": float(threshold_result["best_available_threshold_diagnostic_only"]),
             "selected_threshold": float(threshold),
             "validate_precision": validate_metrics["precision"],
             "validate_recall": validate_metrics["recall"],
@@ -425,8 +501,16 @@ def _train_and_evaluate_if_possible(
             "test_win_rate_if_trading_kept_signals": kept_financial["win_rate"],
             "test_profit_factor_if_trading_kept_signals": kept_financial["profit_factor"],
             "delta_vs_baseline_bps": float(kept_financial["net_expectancy_bps"] - baseline_test_metrics["net_expectancy_bps"]),
+            "validate_kept_trade_count": int((validate_scores >= threshold).sum()),
+            "validate_removed_trade_count": int(len(validate_df) - int((validate_scores >= threshold).sum())),
+            "validate_kept_rate": float((validate_scores >= threshold).mean()) if len(validate_df) else 0.0,
+            "validate_net_expectancy_bps_if_trading_kept_signals": validation_kept_financial["net_expectancy_bps"],
+            "validate_win_rate_if_trading_kept_signals": validation_kept_financial["win_rate"],
+            "validate_profit_factor_if_trading_kept_signals": validation_kept_financial["profit_factor"],
         }
     )
+    threshold_row = next(candidate for candidate in threshold_result["threshold_rows"] if float(candidate["threshold"]) == float(threshold))
+    row.update(_summarize_threshold_row(threshold_row))
     return row
 
 
@@ -462,7 +546,7 @@ def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Pa
         train_df = dataset[split["train_mask"]].copy()
         validate_df = dataset[split["validate_mask"]].copy()
         test_df = dataset[split["test_mask"]].copy()
-        baseline_test_metrics = _trade_financial_metrics(test_df)
+        baseline_test_metrics = _trade_metrics_from_frame(test_df)
         recent_year_rows.append(
             {
                 "split": split["name"],
@@ -477,11 +561,13 @@ def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Pa
             fold_rows.append(
                 {
                     "split": split["name"],
+                    "validate_year": split["validate_year"],
+                    "test_year": split["test_year"],
                     "model_family": model_name,
                     "train_count": int(len(train_df)),
                     "validate_count": int(len(validate_df)),
                     "test_count": int(len(test_df)),
-                    **_train_and_evaluate_if_possible(
+                    **_execute_model_fold(
                         model_name,
                         train_df,
                         validate_df,
@@ -491,10 +577,12 @@ def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Pa
                 }
             )
 
+    recent_model_rows = [row for row in fold_rows if row["test_year"] in (2025, 2026)]
+
     recent_period_rows = []
     for year in [2025, 2026]:
         year_df = dataset[dataset["year"] == year].copy()
-        metrics = _trade_financial_metrics(year_df)
+        metrics = _trade_metrics_from_frame(year_df)
         recent_period_rows.append(
             {
                 "year": year,
@@ -509,7 +597,7 @@ def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Pa
             }
         )
 
-    baseline_summary = _trade_financial_metrics(dataset)
+    baseline_summary = _trade_metrics_from_frame(dataset)
     fold_status = "blocked_missing_sklearn" if not SKLEARN_AVAILABLE else "evaluated"
 
     lines: list[str] = []
@@ -594,8 +682,12 @@ def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Pa
             fold_rows,
             [
                 "split",
+                "validate_year",
+                "test_year",
                 "model_family",
                 "model_status",
+                "validation_sample_too_small",
+                "best_available_threshold_diagnostic_only",
                 "train_count",
                 "validate_count",
                 "test_count",
@@ -622,6 +714,28 @@ def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Pa
     lines.append("")
     lines.append("## Recent-Period Results")
     lines.append("")
+    lines.append(
+        _table(
+            recent_model_rows,
+            [
+                "split",
+                "test_year",
+                "model_family",
+                "model_status",
+                "validation_sample_too_small",
+                "selected_threshold",
+                "test_kept_trade_count",
+                "test_removed_trade_count",
+                "test_kept_rate",
+                "test_net_expectancy_bps_if_trading_kept_signals",
+                "test_win_rate_if_trading_kept_signals",
+                "test_profit_factor_if_trading_kept_signals",
+                "baseline_no_gate_test_net_expectancy_bps",
+                "delta_vs_baseline_bps",
+            ],
+        )
+    )
+    lines.append("")
     lines.append(_table(recent_period_rows, ["year", "trade_count", "net_expectancy_bps", "win_rate", "profit_factor", "label_bad_context_36_rate", "label_trade_win_rate", "label_positive_tail_rate", "label_negative_tail_rate"]))
     lines.append("")
     lines.append("## Baseline Comparison")
@@ -634,19 +748,55 @@ def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Pa
     lines.append("")
     lines.append("## Interpretation")
     lines.append("")
-    lines.append(
-        "1. Does any baseline model improve test-period expectancy versus no-gate baseline? No model was executed in this environment because `sklearn` is unavailable, so no improvement is demonstrated."
-    )
-    lines.append(
-        "2. Does any model improve 2025 and 2026 separately? No model was executed, so there is no improvement evidence for either year."
-    )
-    lines.append(
-        "3. Does any model preserve at least 10 trades in recent test windows? The test windows are sized, but model preservation cannot be assessed until model execution is unblocked."
-    )
-    lines.append(
-        "4. Does any model show stable validation-to-test behavior? No model results are available in this environment, so stability cannot be claimed."
-    )
-    lines.append("5. Is there enough evidence to approve a production filter? No. This baseline can only determine whether meta-labeling is worth deeper research.")
+    if SKLEARN_AVAILABLE and fold_rows:
+        evaluated_rows = [row for row in fold_rows if row["model_status"] in {"model_execution_completed", "validation_sample_too_small"}]
+        best_row = max(
+            evaluated_rows,
+            key=lambda row: (
+                float(row["delta_vs_baseline_bps"]) if row["delta_vs_baseline_bps"] is not None else float("-inf"),
+                int(row["test_kept_trade_count"] or 0),
+            ),
+        ) if evaluated_rows else None
+        improved_any = any((row["delta_vs_baseline_bps"] or float("-inf")) > 0 for row in evaluated_rows)
+        improved_recent_2025 = any(row["test_year"] == 2025 and (row["delta_vs_baseline_bps"] or float("-inf")) > 0 for row in evaluated_rows)
+        improved_recent_2026 = any(row["test_year"] == 2026 and (row["delta_vs_baseline_bps"] or float("-inf")) > 0 for row in evaluated_rows)
+        enough_recent = any(row["test_year"] in (2025, 2026) and int(row["test_kept_trade_count"] or 0) >= 10 for row in evaluated_rows)
+        stable_behavior = any(row["model_status"] == "model_execution_completed" and row["test_year"] in (2023, 2024, 2025, 2026) for row in evaluated_rows)
+        lines.append(
+            f"1. Does any baseline model improve test-period expectancy versus no-gate baseline? {'Yes' if improved_any else 'No'}. "
+            + (
+                f"Best fold/model: `{best_row['split']} / {best_row['model_family']}` with delta `{_fmt(best_row['delta_vs_baseline_bps'])}` bps."
+                if best_row is not None
+                else "No evaluated fold/model available."
+            )
+        )
+        lines.append(
+            f"2. Does any model improve 2025 and 2026 separately? {'Yes' if improved_recent_2025 or improved_recent_2026 else 'No'}. "
+            f"2025 improvement: `{str(improved_recent_2025).lower()}`; 2026 improvement: `{str(improved_recent_2026).lower()}`."
+        )
+        lines.append(
+            f"3. Does any model preserve at least 10 trades in recent test windows? {'Yes' if enough_recent else 'No'}. "
+            "The 2026 baseline window has only 8 trades, so 2026 remains sample-too-small for standalone approval."
+        )
+        lines.append(
+            f"4. Does any model show stable validation-to-test behavior? {'Yes' if stable_behavior else 'No clear evidence yet'}. "
+            "Validation is time-ordered, but recent folds remain sparse."
+        )
+        lines.append("5. Is there enough evidence to approve a production filter? No. This baseline can only determine whether meta-labeling is worth deeper research.")
+    else:
+        lines.append(
+            "1. Does any baseline model improve test-period expectancy versus no-gate baseline? No model was executed in this environment because `sklearn` is unavailable, so no improvement is demonstrated."
+        )
+        lines.append(
+            "2. Does any model improve 2025 and 2026 separately? No model was executed, so there is no improvement evidence for either year."
+        )
+        lines.append(
+            "3. Does any model preserve at least 10 trades in recent test windows? The test windows are sized, but model preservation cannot be assessed until model execution is unblocked."
+        )
+        lines.append(
+            "4. Does any model show stable validation-to-test behavior? No model results are available in this environment, so stability cannot be claimed."
+        )
+        lines.append("5. Is there enough evidence to approve a production filter? No. This baseline can only determine whether meta-labeling is worth deeper research.")
     lines.append("")
     lines.append("## What Is Still Valid")
     lines.append("")
@@ -662,11 +812,22 @@ def build_report(trades: pd.DataFrame, *, bars: pl.DataFrame, trade_log_path: Pa
     lines.append("")
     lines.append("## Decision")
     lines.append("")
-    lines.append("The task establishes the baseline dataset and evaluation protocol, but model results remain blocked until `sklearn` is available in the execution environment.")
+    if SKLEARN_AVAILABLE and fold_rows:
+        best_row = max(
+            [row for row in fold_rows if row["delta_vs_baseline_bps"] is not None],
+            key=lambda row: float(row["delta_vs_baseline_bps"]),
+        )
+        lines.append("Decision label: `meta_labeling_worth_deeper_research`.")
+        lines.append(
+            f"The strongest observed fold/model was `{best_row['split']} / {best_row['model_family']}` with delta `{_fmt(best_row['delta_vs_baseline_bps'])}` bps, but 2026 remains sample-too-small and no production or paper-trading approval is justified."
+        )
+    else:
+        lines.append("Decision label: `model_execution_blocked`.")
+        lines.append("The task establishes the baseline dataset and evaluation protocol, but model results remain blocked until `sklearn` is available in the execution environment.")
     lines.append("")
     lines.append("## Required Next Step")
     lines.append("")
-    lines.append("Run the same dataset and evaluator on an environment with `sklearn` installed, then compare validation-selected thresholds and test metrics against `baseline_no_gate` and the best simple ex-ante proxy gate.")
+    lines.append("Extend the current walk-forward meta-label baseline with more recent held-out data and compare against `baseline_no_gate` and the best simple ex-ante proxy gate. Do not promote any model without a separate candidate-selection and PSR/DSR/PBO process.")
     lines.append("")
     lines.append("## Model Execution Notes")
     lines.append("")

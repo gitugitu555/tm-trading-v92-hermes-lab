@@ -5,3 +5,4 @@ pyarrow
 numba
 zstandard
 pytest
+scikit-learn>=1.4,<2
