@@ -433,10 +433,10 @@ def build_report(*, candidate_inputs: list[CandidateFile], results: list[Validat
         "policy_module_used_directly",
         "ofi_engine_behavior_unchanged",
         "binance_snapshot_bridge_rule_implemented",
-        "snapshot_reset_bridge_events_detected",
-        "snapshot_reset_bridge_ofi_suppressed",
-        "invalid_snapshot_reset_chains_quarantined",
-        "quarantined_segments_emit_no_ofi",
+        "snapshot_reset_bridge_events_detected" if files_with_bridge_events > 0 else "snapshot_reset_bridge_events_not_detected",
+        "snapshot_reset_bridge_ofi_suppressed" if total_ofi_suppressed_due_to_snapshot_bridge_count > 0 else "snapshot_reset_bridge_ofi_not_suppressed",
+        "snapshot_reset_raw_candidates_bridge_clean" if files_all_segments_clean == selected_candidate_count and selected_candidate_count > 0 else "snapshot_reset_raw_candidates_not_all_bridge_clean",
+        "quarantined_segments_observed" if total_quarantined_segment_count > 0 else "no_quarantined_segments_observed",
         "no_ofi_state_crosses_quarantine",
         "source_gap_behavior_unchanged",
         "bounded_raw_snapshot_reset_validation_completed",
@@ -476,6 +476,11 @@ def build_report(*, candidate_inputs: list[CandidateFile], results: list[Validat
         f"{selected_candidate_count} dirty snapshot/reset candidate files were processed in bounded read-only mode.",
         f"Snapshot/reset-like packets were observed in `{files_with_snapshot_like_packets}` files.",
         f"Bridge events were detected in `{files_with_bridge_events}` files.",
+        (
+            f"All selected raw snapshot/reset candidate files were bridge-clean after bridge handling."
+            if files_all_segments_clean == selected_candidate_count and selected_candidate_count > 0
+            else f"Some selected raw snapshot/reset candidate files remained quarantined after bridge handling."
+        ),
         f"Quarantined segments were observed in `{files_with_quarantined_segments}` files.",
         PRODUCTION_APPROVAL_STATEMENT,
         "",
@@ -639,6 +644,11 @@ def build_report(*, candidate_inputs: list[CandidateFile], results: list[Validat
         "- The reusable policy module was used directly.",
         "- The dirty snapshot/reset files were used deterministically.",
         "- The Binance bridge rule was applied to the raw files.",
+        (
+            "- The selected raw snapshot/reset candidate files were bridge-clean after bridge handling."
+            if files_all_segments_clean == selected_candidate_count and selected_candidate_count > 0
+            else "- Some selected raw snapshot/reset candidate files remained quarantined after bridge handling."
+        ),
         "- No OFI artifacts were written.",
         "",
         "## What Failed Or Remains Unknown",

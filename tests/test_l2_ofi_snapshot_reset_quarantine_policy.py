@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from features.microstructure_ofi import OFIEngine
 from features.l2_ofi_segmented_reconstruction import (
     L2Packet,
@@ -219,8 +217,81 @@ def test_summarize_segments_includes_new_quarantine_counters():
     assert summary["ofi_suppressed_due_to_snapshot_bridge_count"] == 1
 
 
+def _validation_result(
+    *,
+    bridge_event_detected_count: int,
+    quarantined_segment_count: int,
+    all_segments_clean: bool,
+    total_ofi_emitted_count: int = 0,
+    ofi_suppressed_due_to_snapshot_bridge_count: int = 0,
+) -> script.ValidationResult:
+    return script.ValidationResult(
+        file_path="/tmp/candidate.parquet.zst",
+        candidate_reason="dirty_snapshot_reset_candidate",
+        file_date="2026-05-26",
+        file_hour="00",
+        rows_scanned=75000,
+        packet_count=1405,
+        snapshot_like_packet_count=1,
+        snapshot_like_packet_indexes=(1,),
+        first_packet_is_snapshot_reset=True,
+        bridge_rule_satisfied=bridge_event_detected_count > 0,
+        bridge_event_detected_count=bridge_event_detected_count,
+        snapshot_reset_observed_count=1,
+        snapshot_reset_clean_seed_count=1 if bridge_event_detected_count > 0 else 0,
+        snapshot_reset_chain_failure_count=0 if bridge_event_detected_count > 0 else 1,
+        snapshot_bridge_event_count=bridge_event_detected_count,
+        quarantined_segment_count=quarantined_segment_count,
+        total_ofi_emitted_count=total_ofi_emitted_count,
+        total_warmup_none_count=1,
+        total_sequence_gap_count=0,
+        ofi_suppressed_due_to_quarantine_count=quarantined_segment_count,
+        ofi_suppressed_due_to_snapshot_bridge_count=ofi_suppressed_due_to_snapshot_bridge_count,
+        clean_segment_count=1 if all_segments_clean else 0,
+        dirty_segment_count=0 if all_segments_clean else 1,
+        all_segments_clean=all_segments_clean,
+        source_gap_boundary_count=0,
+        quarantined=quarantined_segment_count > 0,
+        quarantine_reason="snapshot_reset_bridge_failure" if quarantined_segment_count > 0 else None,
+        source_gap_regression_passed=True,
+        policy_module_used_directly=True,
+        side_mapping_unknown_count=0,
+    )
+
+
+def test_report_uses_conditional_bridge_labels_and_passes_through_max_events():
+    results = [_validation_result(bridge_event_detected_count=0, quarantined_segment_count=1, all_segments_clean=False)]
+    report = script.build_report(
+        candidate_inputs=script.build_candidate_inputs(None),
+        results=results,
+        max_events_per_file=75000,
+    )
+    assert "max_events_per_file`: `75000`" in report
+    assert "snapshot_reset_bridge_events_detected" not in report
+    assert "snapshot_reset_bridge_events_not_detected" in report
+    assert "snapshot_reset_raw_candidates_not_all_bridge_clean" in report
+    assert "quarantined_segments_observed" in report
+    assert "no_quarantined_segments_observed" not in report
+    assert script.PRODUCTION_APPROVAL_STATEMENT in report
+    assert "No policy or OFIEngine behavior is changed." in report
+
+
+def test_report_does_not_overstate_bridge_clean_when_dirty_candidates_present():
+    results = [_validation_result(bridge_event_detected_count=0, quarantined_segment_count=1, all_segments_clean=False)]
+    report = script.build_report(
+        candidate_inputs=script.build_candidate_inputs(None),
+        results=results,
+        max_events_per_file=75000,
+    )
+    assert "All selected raw snapshot/reset candidate files were bridge-clean after bridge handling." not in report
+    assert "Some selected raw snapshot/reset candidate files remained quarantined after bridge handling." in report
+
+
 def test_report_statement_present():
-    doc = Path("/home/tokio/tm-trading-v92-core/docs/v92_L2_OFI_SNAPSHOT_RESET_QUARANTINE_POLICY_VALIDATION.md")
-    script.run_validation(max_events_per_file=10, output_doc=doc, candidate_file_args=[])
-    assert script.PRODUCTION_APPROVAL_STATEMENT in doc.read_text(encoding="utf-8")
-    assert "No policy or OFIEngine behavior is changed." in doc.read_text(encoding="utf-8")
+    report = script.build_report(
+        candidate_inputs=script.build_candidate_inputs(None),
+        results=[_validation_result(bridge_event_detected_count=1, quarantined_segment_count=0, all_segments_clean=True, total_ofi_emitted_count=1403, ofi_suppressed_due_to_snapshot_bridge_count=1)],
+        max_events_per_file=75000,
+    )
+    assert script.PRODUCTION_APPROVAL_STATEMENT in report
+    assert "No policy or OFIEngine behavior is changed." in report
