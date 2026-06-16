@@ -152,3 +152,13 @@ Do not mark this ADR as accepted yet. Keep status `Proposed` until implementatio
 Write a bounded implementation prompt for the quarantine policy only after this ADR is committed.
 
 This ADR does not approve OFI for production, paper trading, live trading, alpha use, or full historical reconstruction.
+
+## Implementation Note
+
+The implementation candidate formalizes the Binance snapshot bridge rule:
+
+`first_update_id <= snapshot.final_update_id <= final_update_id`
+
+Bridge-event OFI is suppressed. Invalid bridge chains are quarantined.
+
+Status remains `Proposed` pending review of the bounded validation results and any follow-up change request.

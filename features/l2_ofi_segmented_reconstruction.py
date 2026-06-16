@@ -35,6 +35,8 @@ class L2Segment:
     start_reason: str
     boundary_reason: str
     packets: tuple[L2Packet, ...]
+    quarantined: bool = False
+    quarantine_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,15 @@ class SegmentRunResult:
     warmup_none_count: int
     sequence_gap_count: int
     clean: bool
+    quarantined: bool = False
+    quarantine_reason: str | None = None
+    snapshot_reset_observed_count: int = 0
+    snapshot_reset_clean_seed_count: int = 0
+    snapshot_reset_chain_failure_count: int = 0
+    snapshot_bridge_event_count: int = 0
+    quarantined_segment_count: int = 0
+    ofi_suppressed_due_to_quarantine_count: int = 0
+    ofi_suppressed_due_to_snapshot_bridge_count: int = 0
 
 
 def packet_sort_key(packet: L2Packet) -> tuple:
@@ -64,12 +75,32 @@ def is_snapshot_or_reset(packet: L2Packet) -> bool:
     return packet.first_update_id is None or packet.prev_final_update_id is None
 
 
+def is_snapshot_bridge_event(snapshot_packet: L2Packet, candidate_packet: L2Packet) -> bool:
+    """Return True when the candidate satisfies the Binance post-snapshot bridge rule."""
+
+    if not is_snapshot_or_reset(snapshot_packet):
+        return False
+    if is_snapshot_or_reset(candidate_packet):
+        return False
+    if candidate_packet.first_update_id is None or snapshot_packet.final_update_id is None or candidate_packet.final_update_id is None:
+        return False
+    return candidate_packet.first_update_id <= snapshot_packet.final_update_id <= candidate_packet.final_update_id
+
+
+def is_normal_chain(previous_packet: L2Packet, current_packet: L2Packet) -> bool:
+    """Return True when two normal diff packets preserve the prev/final chain."""
+
+    if is_snapshot_or_reset(previous_packet) or is_snapshot_or_reset(current_packet):
+        return False
+    return current_packet.prev_final_update_id == previous_packet.final_update_id
+
+
 def is_source_gap(previous: L2Packet, current: L2Packet) -> bool:
     """Return True for a normal diff packet that breaks the prev/final chain."""
 
     if is_snapshot_or_reset(previous) or is_snapshot_or_reset(current):
         return False
-    return current.prev_final_update_id != previous.final_update_id
+    return not is_normal_chain(previous, current)
 
 
 def segment_packets(packets: Iterable[L2Packet]) -> tuple[L2Segment, ...]:
@@ -84,7 +115,7 @@ def segment_packets(packets: Iterable[L2Packet]) -> tuple[L2Segment, ...]:
     if not ordered:
         return ()
 
-    segments: list[L2Segment] = []
+    raw_segments: list[tuple[str, int, int, str, tuple[L2Packet, ...]]] = []
     current_packets: list[L2Packet] = [ordered[0]]
     start_packet_index = 1
     start_reason = "file_start"
@@ -92,15 +123,8 @@ def segment_packets(packets: Iterable[L2Packet]) -> tuple[L2Segment, ...]:
     def close_segment(boundary_reason: str, end_index: int) -> None:
         if not current_packets:
             return
-        segments.append(
-            L2Segment(
-                segment_id=len(segments) + 1,
-                start_packet_index=start_packet_index,
-                end_packet_index=end_index,
-                start_reason=start_reason,
-                boundary_reason=boundary_reason,
-                packets=tuple(current_packets),
-            )
+        raw_segments.append(
+            (start_reason, start_packet_index, end_index, boundary_reason, tuple(current_packets))
         )
 
     for idx, packet in enumerate(ordered[1:], start=2):
@@ -120,6 +144,29 @@ def segment_packets(packets: Iterable[L2Packet]) -> tuple[L2Segment, ...]:
         current_packets.append(packet)
 
     close_segment("sample_end", len(ordered))
+
+    segments: list[L2Segment] = []
+    for idx, (start_reason, start_packet_index, end_packet_index, boundary_reason, packets_tuple) in enumerate(raw_segments, start=1):
+        quarantined = False
+        quarantine_reason: str | None = None
+        if packets_tuple and is_snapshot_or_reset(packets_tuple[0]):
+            bridge_candidate = packets_tuple[1] if len(packets_tuple) > 1 else None
+            if bridge_candidate is None or not is_snapshot_bridge_event(packets_tuple[0], bridge_candidate):
+                quarantined = True
+                quarantine_reason = "snapshot_reset_bridge_failure"
+        segments.append(
+            L2Segment(
+                segment_id=idx,
+                start_packet_index=start_packet_index,
+                end_packet_index=end_packet_index,
+                start_reason=start_reason,
+                boundary_reason=boundary_reason,
+                packets=packets_tuple,
+                quarantined=quarantined,
+                quarantine_reason=quarantine_reason,
+            )
+        )
+
     return tuple(segments)
 
 
@@ -130,29 +177,145 @@ def run_segment_with_ofi_engine(segment: L2Segment, *, strict_sequence: bool = T
     ofi_emitted_count = 0
     warmup_none_count = 0
     sequence_gap_count = 0
+    snapshot_reset_observed_count = 0
+    snapshot_reset_clean_seed_count = 0
+    snapshot_reset_chain_failure_count = 0
+    snapshot_bridge_event_count = 0
+    quarantined_segment_count = 0
+    ofi_suppressed_due_to_quarantine_count = 0
+    ofi_suppressed_due_to_snapshot_bridge_count = 0
+    quarantined = bool(segment.quarantined)
+    quarantine_reason = segment.quarantine_reason
 
-    for packet in segment.packets:
-        if is_snapshot_or_reset(packet):
+    packet_index = 0
+    previous_packet: L2Packet | None = None
+
+    if segment.packets and is_snapshot_or_reset(segment.packets[0]):
+        snapshot_reset_observed_count += 1
+        snapshot_packet = segment.packets[0]
+        snapshot_ofi = engine.process_event(
+            bids=list(snapshot_packet.bids),
+            asks=list(snapshot_packet.asks),
+            event_time=snapshot_packet.event_time,
+            first_update_id=snapshot_packet.first_update_id,
+            final_update_id=snapshot_packet.final_update_id,
+            previous_update_id=None,
+        )
+        if snapshot_ofi is None:
+            warmup_none_count += 1
+
+        bridge_packet = segment.packets[1] if len(segment.packets) > 1 else None
+        if bridge_packet is None or not is_snapshot_bridge_event(snapshot_packet, bridge_packet):
+            quarantined = True
+            quarantine_reason = "snapshot_reset_bridge_failure"
+            snapshot_reset_chain_failure_count += 1
+            quarantined_segment_count += 1
+            if snapshot_ofi is not None:
+                ofi_suppressed_due_to_quarantine_count += 1
+            ofi_suppressed_due_to_quarantine_count += max(0, len(segment.packets) - 1)
+            return SegmentRunResult(
+                segment_id=segment.segment_id,
+                packet_count=len(segment.packets),
+                ofi_emitted_count=0,
+                warmup_none_count=warmup_none_count,
+                sequence_gap_count=0,
+                clean=False,
+                quarantined=quarantined,
+                quarantine_reason=quarantine_reason,
+                snapshot_reset_observed_count=snapshot_reset_observed_count,
+                snapshot_reset_clean_seed_count=snapshot_reset_clean_seed_count,
+                snapshot_reset_chain_failure_count=snapshot_reset_chain_failure_count,
+                snapshot_bridge_event_count=snapshot_bridge_event_count,
+                quarantined_segment_count=quarantined_segment_count,
+                ofi_suppressed_due_to_quarantine_count=ofi_suppressed_due_to_quarantine_count,
+                ofi_suppressed_due_to_snapshot_bridge_count=ofi_suppressed_due_to_snapshot_bridge_count,
+            )
+
+        snapshot_reset_clean_seed_count += 1
+        snapshot_bridge_event_count += 1
+        bridge_ofi = engine.process_event(
+            bids=list(bridge_packet.bids),
+            asks=list(bridge_packet.asks),
+            event_time=bridge_packet.event_time,
+            first_update_id=bridge_packet.first_update_id,
+            final_update_id=bridge_packet.final_update_id,
+            previous_update_id=None,
+        )
+        if bridge_ofi is None:
+            warmup_none_count += 1
+        ofi_suppressed_due_to_snapshot_bridge_count += 1
+        previous_packet = bridge_packet
+        packet_index = 2
+    else:
+        if segment.packets:
+            first_packet = segment.packets[0]
+            ofi = engine.process_event(
+                bids=list(first_packet.bids),
+                asks=list(first_packet.asks),
+                event_time=first_packet.event_time,
+                first_update_id=first_packet.first_update_id,
+                final_update_id=first_packet.final_update_id,
+                previous_update_id=first_packet.prev_final_update_id,
+            )
+            if engine.requires_resync and not is_snapshot_or_reset(first_packet):
+                sequence_gap_count += 1
+                if strict_sequence:
+                    return SegmentRunResult(
+                        segment_id=segment.segment_id,
+                        packet_count=len(segment.packets),
+                        ofi_emitted_count=0,
+                        warmup_none_count=warmup_none_count,
+                        sequence_gap_count=sequence_gap_count,
+                        clean=False,
+                        quarantined=quarantined,
+                        quarantine_reason=quarantine_reason,
+                        snapshot_reset_observed_count=snapshot_reset_observed_count,
+                        snapshot_reset_clean_seed_count=snapshot_reset_clean_seed_count,
+                        snapshot_reset_chain_failure_count=snapshot_reset_chain_failure_count,
+                        snapshot_bridge_event_count=snapshot_bridge_event_count,
+                        quarantined_segment_count=quarantined_segment_count,
+                        ofi_suppressed_due_to_quarantine_count=ofi_suppressed_due_to_quarantine_count,
+                        ofi_suppressed_due_to_snapshot_bridge_count=ofi_suppressed_due_to_snapshot_bridge_count,
+                    )
+                engine.reset()
+            if ofi is None:
+                warmup_none_count += 1
+            else:
+                ofi_emitted_count += 1
+            previous_packet = first_packet
+            packet_index = 1
+
+    for packet in segment.packets[packet_index:]:
+        if previous_packet is None:
+            previous_packet = packet
+            continue
+        if not is_normal_chain(previous_packet, packet):
+            sequence_gap_count += 1
+            if strict_sequence:
+                break
             engine.reset()
-
+            previous_packet = packet
+            continue
         ofi = engine.process_event(
             bids=list(packet.bids),
             asks=list(packet.asks),
             event_time=packet.event_time,
             first_update_id=packet.first_update_id,
             final_update_id=packet.final_update_id,
-            previous_update_id=None if is_snapshot_or_reset(packet) else packet.prev_final_update_id,
+            previous_update_id=packet.prev_final_update_id,
         )
         if engine.requires_resync and not is_snapshot_or_reset(packet):
             sequence_gap_count += 1
             if strict_sequence:
                 break
             engine.reset()
+            previous_packet = packet
             continue
         if ofi is None:
             warmup_none_count += 1
         else:
             ofi_emitted_count += 1
+        previous_packet = packet
 
     return SegmentRunResult(
         segment_id=segment.segment_id,
@@ -160,7 +323,16 @@ def run_segment_with_ofi_engine(segment: L2Segment, *, strict_sequence: bool = T
         ofi_emitted_count=ofi_emitted_count,
         warmup_none_count=warmup_none_count,
         sequence_gap_count=sequence_gap_count,
-        clean=sequence_gap_count == 0,
+        clean=sequence_gap_count == 0 and not quarantined,
+        quarantined=quarantined,
+        quarantine_reason=quarantine_reason,
+        snapshot_reset_observed_count=snapshot_reset_observed_count,
+        snapshot_reset_clean_seed_count=snapshot_reset_clean_seed_count,
+        snapshot_reset_chain_failure_count=snapshot_reset_chain_failure_count,
+        snapshot_bridge_event_count=snapshot_bridge_event_count,
+        quarantined_segment_count=quarantined_segment_count,
+        ofi_suppressed_due_to_quarantine_count=ofi_suppressed_due_to_quarantine_count,
+        ofi_suppressed_due_to_snapshot_bridge_count=ofi_suppressed_due_to_snapshot_bridge_count,
     )
 
 
@@ -178,4 +350,11 @@ def summarize_segments(segments: Iterable[L2Segment], results: Iterable[SegmentR
         "total_ofi_emitted_count": sum(result.ofi_emitted_count for result in results),
         "total_warmup_none_count": sum(result.warmup_none_count for result in results),
         "total_sequence_gap_count": sum(result.sequence_gap_count for result in results),
+        "snapshot_reset_observed_count": sum(result.snapshot_reset_observed_count for result in results),
+        "snapshot_reset_clean_seed_count": sum(result.snapshot_reset_clean_seed_count for result in results),
+        "snapshot_reset_chain_failure_count": sum(result.snapshot_reset_chain_failure_count for result in results),
+        "snapshot_bridge_event_count": sum(result.snapshot_bridge_event_count for result in results),
+        "quarantined_segment_count": sum(result.quarantined_segment_count for result in results),
+        "ofi_suppressed_due_to_quarantine_count": sum(result.ofi_suppressed_due_to_quarantine_count for result in results),
+        "ofi_suppressed_due_to_snapshot_bridge_count": sum(result.ofi_suppressed_due_to_snapshot_bridge_count for result in results),
     }
