@@ -293,7 +293,7 @@ def test_report_includes_no_production_no_alpha_statement(tmp_path: Path):
             packet_count=1,
             segment_count=1,
             meaningful_segment_count=0,
-            source_gap_boundary_count=0,
+            source_gap_boundary_count=1,
             snapshot_reset_boundary_count=0,
             clean_segment_count=1,
             dirty_segment_count=0,
@@ -307,7 +307,7 @@ def test_report_includes_no_production_no_alpha_statement(tmp_path: Path):
             missing_transaction_time_count=0,
             snapshot_like_packet_count=0,
             estimated_preselection_source_gap_count=0,
-            actual_source_gap_boundary_count=0,
+            actual_source_gap_boundary_count=1,
             timestamp_fallback_used=False,
             side_mapping_unknown_count=0,
             join_result={
@@ -348,4 +348,82 @@ def test_report_includes_no_production_no_alpha_statement(tmp_path: Path):
         max_candidate_files=120,
         max_selected_files=24,
     )
+    assert script.PRODUCTION_APPROVAL_STATEMENT in report
+    assert "Snapshot/reset-like packets were not observed" in report
+    assert "bounded raw edge-case sample did not contain selected packets requiring fallback" in report
+
+
+def test_report_labels_and_raw_sample_scope_are_precise(tmp_path: Path):
+    selected_files = [(Path("/tmp/example/BTCUSDT_orderbook.parquet.zst"), "edge_case_candidate")]
+    selected_results = [
+        script.SelectedFileResult(
+            file_path=selected_files[0][0].as_posix(),
+            file_date="2025-06-28",
+            selection_reason="edge_case_candidate",
+            packet_count=1,
+            segment_count=1,
+            meaningful_segment_count=0,
+            source_gap_boundary_count=1,
+            snapshot_reset_boundary_count=0,
+            clean_segment_count=1,
+            dirty_segment_count=0,
+            all_segments_clean=True,
+            total_ofi_emitted_count=0,
+            total_warmup_none_count=1,
+            total_sequence_gap_count=0,
+            min_segment_packet_count=1,
+            max_segment_packet_count=1,
+            one_packet_segment_count=1,
+            missing_transaction_time_count=0,
+            snapshot_like_packet_count=0,
+            estimated_preselection_source_gap_count=0,
+            actual_source_gap_boundary_count=1,
+            timestamp_fallback_used=False,
+            side_mapping_unknown_count=0,
+            join_result={
+                "file_date": "2025-06-28",
+                "bar_file_found": False,
+                "bar_row_count": None,
+                "join_attempted": False,
+                "bar_count_preserved": None,
+                "join_deferred_reason": "no_bar_file",
+            },
+            packets=[_packet(10, 9)],
+            segments=(L2Segment(1, 1, 1, "file_start", "sample_end", (_packet(10, 9),)),),
+            results=[SegmentRunResult(1, 1, 0, 1, 0, True)],
+        )
+    ]
+    report = script.build_report(
+        l2_root=Path("/mnt/seagate/tm-trading-v555/data/raw/cryptohftdata/orderbook/binance_futures/BTCUSDT"),
+        candidate_file_count=1,
+        candidate_previews=[
+            script.CandidatePreview(
+                candidate_file_path=selected_files[0][0].as_posix(),
+                file_date="2025-06-28",
+                preview_row_count=2,
+                preview_packet_count=1,
+                missing_transaction_time_count=0,
+                missing_first_update_id_count=0,
+                missing_prev_final_update_id_count=0,
+                estimated_source_gap_count=0,
+                timestamp_non_monotonic_hint_count=0,
+                repeated_final_update_id_hint_count=0,
+                side_mapping_unknown_count=0,
+                score=0,
+            )
+        ],
+        selected_files=selected_files,
+        file_results=selected_results,
+        join_rows=[selected_results[0].join_result],
+        max_candidate_files=120,
+        max_selected_files=24,
+    )
+    assert "raw_sample_source_gap_validated = yes" in report
+    assert "raw_sample_snapshot_reset_observed = no" in report
+    assert "raw_sample_timestamp_fallback_observed = no" in report
+    assert "snapshot_reset_policy_unit_covered = yes" in report
+    assert "timestamp_fallback_policy_unit_covered = yes" in report
+    assert "raw_sample_snapshot_resets_not_observed" in report
+    assert "raw_sample_timestamp_fallback_not_observed" in report
+    assert "segmented_policy_edge_case_validated_bounded_only" in report
     assert script.PRODUCTION_APPROVAL_STATEMENT in report

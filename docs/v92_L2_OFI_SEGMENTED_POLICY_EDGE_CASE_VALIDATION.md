@@ -19,6 +19,11 @@ Validate the reusable segmented reconstruction policy module on a bounded raw L2
 16 edge-case-focused bounded raw L2 files were converted into `L2Packet` objects and processed by the reusable segmented policy module.
 7 selected files were new relative to the prior 12-file rehearsal and 9 were repeated.
 Segments remained clean in sample `True` with `0` dirty files.
+- `raw_sample_source_gap_validated = yes`
+- `raw_sample_snapshot_reset_observed = no`
+- `raw_sample_timestamp_fallback_observed = no`
+- `snapshot_reset_policy_unit_covered = yes`
+- `timestamp_fallback_policy_unit_covered = yes`
 This validation does not approve OFI for production, paper trading, live trading, or alpha use.
 
 ## Candidate Scan Method
@@ -75,14 +80,14 @@ Deterministic candidate scanning used anchored files, neighboring files around t
 | 120 | 16 | 240000 | 17 | 17 | 1 | 0 | 16 | 0 | 239966 | 34 | 0 | 0 | 0 | 1 | 0 |
 
 ## Segment Boundary Results
-- Source gaps and snapshot/reset-like packets were converted into segment boundaries by the policy module.
+- Observed source gaps were converted into segment boundaries by the policy module. Snapshot/reset-like packets were not observed in this bounded raw sample; that policy path remains covered by synthetic/unit tests only.
 - OFIEngine was fresh per segment and no OFI state crossed boundaries.
 
 ## Timestamp Fallback Results
-- The policy supports transaction-time fallback ordering, but this bounded sample did not surface any selected files requiring it.
+- The reusable policy supports transaction-time fallback ordering, and the synthetic tests cover this path. The bounded raw edge-case sample did not contain selected packets requiring fallback ordering.
 
 ## Snapshot/Reset Results
-- The policy preserves snapshot/reset-like packets as segment boundaries when present, but none were observed in this bounded sample.
+- Snapshot/reset-like packets were not observed in this bounded sample; the policy path remains covered by synthetic/unit tests only.
 
 ## Source-Gap Results
 - Source gaps observed in the bounded sample were treated as segment boundaries and processed in memory only.
@@ -111,7 +116,8 @@ Deterministic candidate scanning used anchored files, neighboring files around t
 - The reusable policy module was used directly.
 - Bounded raw L2 files were converted into `L2Packet` objects.
 - Edge-case-heavy files were selected deterministically.
-- Source gaps and snapshot/reset-like packets remained bounded and segmentable.
+- Source gaps remained bounded and segmentable.
+- Snapshot/reset-like and timestamp-fallback behavior is covered by synthetic/unit tests.
 
 ## What Failed Or Remains Unknown
 - This remains a bounded validation only.
@@ -128,7 +134,7 @@ Deterministic candidate scanning used anchored files, neighboring files around t
 - Alpha claims.
 
 ## Decision
-policy_module_used_directly, l2packet_conversion_successful, deterministic_edge_case_selection_used, segmentation_policy_reused, source_gaps_as_segment_boundaries, snapshot_resets_as_segment_boundaries, timestamp_fallback_validated, segments_clean_in_edge_case_sample, dirty_segments_detected, ofi_values_emitted_in_segments, join_readiness_sample_passed, segmented_policy_edge_case_validated, segmented_reconstruction_not_globally_approved, broader_reconstruction_blocked, alpha_blocked, paper_live_blocked.
+policy_module_used_directly, l2packet_conversion_successful, deterministic_edge_case_selection_used, segmentation_policy_reused, raw_sample_source_gaps_as_segment_boundaries, raw_sample_snapshot_resets_not_observed, raw_sample_timestamp_fallback_not_observed, snapshot_reset_policy_unit_covered, timestamp_fallback_policy_unit_covered, segments_clean_in_edge_case_sample, dirty_segments_detected, ofi_values_emitted_in_segments, join_readiness_sample_passed, segmented_policy_edge_case_validated_bounded_only, segmented_reconstruction_not_globally_approved, broader_reconstruction_blocked, alpha_blocked, paper_live_blocked.
 
 ## Required Next Step
 Use the policy module in another bounded read-only rehearsal or diagnostic sample before any broader reconstruction policy change.
