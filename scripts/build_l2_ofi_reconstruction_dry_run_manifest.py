@@ -168,15 +168,18 @@ class PolicyCheckResult:
 class JoinReadinessResult:
     file_date: str | None
     bar_file_found: bool
-    bar_row_count: int | None
-    join_attempted: bool
-    bar_count_preserved: bool | None
-    join_deferred_reason: str | None
+    bar_file_path: str | None = None
+    bar_shard_resolution_strategy: str | None = None
+    bar_row_count: int | None = None
+    join_attempted: bool = False
+    bar_count_preserved: bool | None = None
+    join_deferred_reason: str | None = None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", default="BTCUSDT")
+    parser.add_argument("--bar-size", default="750btc")
     parser.add_argument("--l2-root", type=Path, required=True)
     parser.add_argument("--bar-dir", type=Path, required=True)
     parser.add_argument("--max-candidate-files", type=int, default=720)
@@ -246,7 +249,47 @@ def _parse_date_components(path: Path) -> tuple[int, int, int] | None:
 
 def _is_supported_path(path: Path) -> bool:
     name = path.name.lower()
-    return name.endswith(".parquet") or name.endswith(".parquet.zst")
+    return (
+        name.endswith(".parquet")
+        or name.endswith(".parquet.zst")
+        or name.endswith(".csv")
+        or name.endswith(".feather")
+        or name.endswith(".arrow")
+    )
+
+
+def _bar_file_date_hint(path: Path) -> str | None:
+    match = re.search(r"20\d{2}-\d{2}(?:-\d{2})?", path.name)
+    return match.group(0) if match else _file_date(path)
+
+
+def _bar_file_resolution_strategy(path: Path, file_date: str | None) -> str | None:
+    if file_date is None:
+        return None
+    filename = path.name
+    if re.search(rf"20\d{{2}}-\d{{2}}-\d{{2}}", filename):
+        return "day"
+    if re.search(rf"20\d{{2}}-\d{{2}}", filename):
+        return "month"
+    return None
+
+
+def _collect_bar_files(bar_dir: Path, symbol: str, bar_size: str) -> list[Path]:
+    root = Path(bar_dir)
+    patterns = ["*.parquet", "*.csv", "*.feather", "*.arrow"]
+    candidates: list[Path] = []
+    for pattern in patterns:
+        candidates.extend(root.rglob(pattern))
+    filtered: list[Path] = []
+    for path in candidates:
+        name = path.name.lower()
+        if symbol.lower() not in name or bar_size.lower() not in name or "tier2" not in name:
+            continue
+        if _bar_file_date_hint(path) is None:
+            continue
+        filtered.append(path)
+    unique = {path.as_posix(): path for path in filtered}
+    return sorted(unique.values(), key=lambda path: (_bar_file_date_hint(path) or "", path.as_posix()))
 
 
 def _read_parquet_preview(path: Path, max_rows: int) -> pd.DataFrame:
@@ -626,32 +669,69 @@ def _run_policy_check(preview: CandidatePreview, path: Path, max_rows: int) -> P
     )
 
 
-def _find_bar_file(bar_dir: Path, symbol: str, file_date: str | None) -> Path | None:
+def _find_bar_file(bar_dir: Path, symbol: str, bar_size: str, file_date: str | None) -> tuple[Path | None, str | None]:
     if file_date is None:
-        return None
+        return None, None
     root = Path(bar_dir)
-    exact = sorted(root.rglob(f"{symbol}_tier2_750btc_{file_date}.parquet"))
-    if exact:
-        return exact[0]
-    fallback = sorted(root.rglob(f"*{file_date}*.parquet"))
-    return fallback[0] if fallback else None
+    exact_patterns = [
+        f"{symbol}*tier2*{bar_size}_{file_date}.parquet",
+        f"{symbol}*tier2*{bar_size}_{file_date}.csv",
+        f"{symbol}*tier2*{bar_size}_{file_date}.feather",
+        f"{symbol}*tier2*{bar_size}_{file_date}.arrow",
+        f"{symbol}*tier2*{bar_size}_{file_date}.parquet.zst",
+    ]
+    for pattern in exact_patterns:
+        matches = sorted(root.rglob(pattern))
+        if matches:
+            return matches[0], "day"
+
+    month = file_date[:7]
+    month_patterns = [
+        f"{symbol}*tier2*{bar_size}_{month}.parquet",
+        f"{symbol}*tier2*{bar_size}_{month}.csv",
+        f"{symbol}*tier2*{bar_size}_{month}.feather",
+        f"{symbol}*tier2*{bar_size}_{month}.arrow",
+        f"{symbol}*tier2*{bar_size}_{month}.parquet.zst",
+    ]
+    for pattern in month_patterns:
+        matches = sorted(root.rglob(pattern))
+        if matches:
+            return matches[0], "month"
+
+    fallback_candidates = []
+    for path in _collect_bar_files(root, symbol, bar_size):
+        hint = _bar_file_date_hint(path)
+        if hint == file_date or (hint is not None and hint.startswith(month)):
+            fallback_candidates.append(path)
+    return (fallback_candidates[0], "fallback") if fallback_candidates else (None, None)
 
 
 def _load_bar_frame(bar_path: Path) -> pl.DataFrame:
     return pl.read_parquet(bar_path)
 
 
-def _build_join_readiness_result(bar_dir: Path, symbol: str, file_date: str | None) -> JoinReadinessResult:
-    bar_path = _find_bar_file(bar_dir, symbol, file_date)
+def _build_join_readiness_result(bar_dir: Path, symbol: str, bar_size: str, file_date: str | None) -> JoinReadinessResult:
+    bar_path, resolution_strategy = _find_bar_file(bar_dir, symbol, bar_size, file_date)
     if file_date is None:
-        return JoinReadinessResult(file_date=None, bar_file_found=False, bar_row_count=None, join_attempted=False, bar_count_preserved=None, join_deferred_reason="file_date_unavailable")
+        return JoinReadinessResult(file_date=None, bar_file_found=False, bar_file_path=None, bar_shard_resolution_strategy=None, bar_row_count=None, join_attempted=False, bar_count_preserved=None, join_deferred_reason="file_date_unavailable")
     if bar_path is None:
-        return JoinReadinessResult(file_date=file_date, bar_file_found=False, bar_row_count=None, join_attempted=False, bar_count_preserved=None, join_deferred_reason="bar_file_missing")
+        return JoinReadinessResult(file_date=file_date, bar_file_found=False, bar_file_path=None, bar_shard_resolution_strategy=None, bar_row_count=None, join_attempted=False, bar_count_preserved=None, join_deferred_reason="bar_file_missing")
     bar_frame = _load_bar_frame(bar_path)
-    joined = join_ofi_to_bars_preserve_coverage(bar_frame, None)
+    synthetic_ofi = pl.DataFrame(
+        {
+            "datetime": [
+                bar_frame.select(pl.col("open_time").min()).item(),
+                bar_frame.select(pl.col("close_time").max()).item(),
+            ],
+            "ofi": [0.0, 0.0],
+        }
+    )
+    joined = join_ofi_to_bars_preserve_coverage(bar_frame, synthetic_ofi)
     return JoinReadinessResult(
         file_date=file_date,
         bar_file_found=True,
+        bar_file_path=bar_path.as_posix(),
+        bar_shard_resolution_strategy=resolution_strategy,
         bar_row_count=bar_frame.height,
         join_attempted=True,
         bar_count_preserved=joined.height == bar_frame.height,
@@ -662,10 +742,14 @@ def _build_join_readiness_result(bar_dir: Path, symbol: str, file_date: str | No
 def build_report(
     *,
     discovered_file_count: int,
+    discovered_bar_count: int,
+    bar_month_shard_count: int,
+    bar_day_shard_count: int,
     candidate_inputs: list[CandidateFile],
     previews: list[CandidatePreview],
     policy_results: list[PolicyCheckResult],
     join_results: list[JoinReadinessResult],
+    bar_size: str,
     max_candidate_files: int,
     preview_rows_per_file: int,
     max_policy_check_files: int,
@@ -705,10 +789,13 @@ def build_report(
 
     join_attempted_count = sum(1 for result in join_results if result.join_attempted)
     join_deferred_count = sum(1 for result in join_results if not result.join_attempted)
+    join_preserved_count = sum(1 for result in join_results if result.join_attempted and result.bar_count_preserved is True)
+    join_not_preserved_count = sum(1 for result in join_results if result.join_attempted and result.bar_count_preserved is False)
+    join_readiness_attempted = join_attempted_count > 0
+    join_readiness_deferred = join_deferred_count > 0
     preserved_attempted = [result.bar_count_preserved for result in join_results if result.join_attempted]
-    join_bar_count_preserved = any(value is True for value in preserved_attempted)
+    join_bar_count_preserved = bool(preserved_attempted) and all(value is True for value in preserved_attempted)
     join_bar_count_not_preserved = any(value is False for value in preserved_attempted)
-    join_attempted_any = join_attempted_count > 0
     join_all_deferred = len(join_results) > 0 and join_attempted_count == 0
 
     decision_labels = [
@@ -722,11 +809,9 @@ def build_report(
         "alpha_blocked",
         "paper_live_blocked",
     ]
-    if join_all_deferred:
-        decision_labels.append("join_readiness_deferred_bar_files_missing")
-    elif join_attempted_any:
+    if join_readiness_attempted:
         decision_labels.append("join_readiness_checked_where_possible")
-    else:
+    elif len(join_results) > 0:
         decision_labels.append("join_readiness_not_attempted")
     decision_labels.append("full_bounded_manifest_completed" if dry_run_scope == "full_bounded_manifest" else "smoke_bounded_manifest_completed")
     if accepted_count > 0:
@@ -741,12 +826,18 @@ def build_report(
         decision_labels.append("rejected_dirty_candidates_found")
     if deferred_count > 0:
         decision_labels.append("deferred_candidates_found")
-    if join_attempted_any and join_bar_count_preserved and not join_bar_count_not_preserved:
+    if join_readiness_attempted and join_bar_count_preserved and not join_bar_count_not_preserved:
         decision_labels.append("bar_count_preserved_where_attempted")
-    elif join_attempted_any and join_bar_count_not_preserved:
+    elif join_readiness_attempted and join_bar_count_not_preserved:
         decision_labels.append("bar_count_not_preserved_where_attempted")
-    elif join_all_deferred:
+    elif not join_readiness_attempted:
         decision_labels.append("bar_count_preservation_not_applicable")
+    if join_readiness_deferred:
+        decision_labels.append("join_readiness_deferred_bar_files_missing")
+    if any(result.bar_shard_resolution_strategy == "month" for result in join_results if result.join_attempted):
+        decision_labels.append("bar_month_shards_resolved")
+    if any(result.bar_shard_resolution_strategy == "day" for result in join_results if result.join_attempted):
+        decision_labels.append("bar_day_shards_resolved")
 
     selected_preview_map = {preview.candidate_file_path: preview for preview in previews}
 
@@ -802,12 +893,20 @@ def build_report(
         f"- `max_candidate_files`: `{max_candidate_files}`",
         f"- `preview_rows_per_file`: `{preview_rows_per_file}`",
         f"- `max_policy_check_files`: `{max_policy_check_files}`",
+        f"- `bar_size`: `{bar_size}`",
         f"- `selected_file_count`: `{selected_count}`",
         f"- `files_previewed`: `{preview_count}`",
         f"- `files_policy_checked`: `{policy_check_count}`",
         f"- `discovered_file_count`: `{discovered_file_count}`",
+        f"- `discovered_bar_count`: `{discovered_bar_count}`",
+        f"- `bar_month_shard_count`: `{bar_month_shard_count}`",
+        f"- `bar_day_shard_count`: `{bar_day_shard_count}`",
         f"- `previewed_file_count`: `{preview_count}`",
         f"- `policy_checked_file_count`: `{policy_check_count}`",
+        f"- `join_attempted_count`: `{join_attempted_count}`",
+        f"- `join_deferred_count`: `{join_deferred_count}`",
+        f"- `join_preserved_count`: `{join_preserved_count}`",
+        f"- `join_not_preserved_count`: `{join_not_preserved_count}`",
         "",
         "## Read-Only Guardrails",
         "- Read-only bounded dry-run only.",
@@ -859,15 +958,21 @@ def build_report(
         "",
         "## Executive Finding",
         f"Discovered files under `l2_root`: `{discovered_file_count}`.",
+        f"Discovered bar files under `bar_dir`: `{discovered_bar_count}`.",
         f"Files previewed: `{preview_count}`.",
         f"Files policy-checked: `{policy_check_count}`.",
+        f"Join-readiness attempted: `{join_attempted_count}`.",
+        f"Join-readiness deferred: `{join_deferred_count}`.",
+        f"Join-readiness preserved where attempted: `{join_preserved_count}`.",
+        f"Join-readiness not preserved where attempted: `{join_not_preserved_count}`.",
         f"Accepted bounded-clean candidates: `{accepted_count}`.",
         f"Source-gap-clean candidates: `{source_gap_clean_count}`.",
         f"Snapshot-bridge-clean candidates: `{snapshot_bridge_clean_count}`.",
         f"Quarantined candidates: `{quarantined_count}`.",
         f"Rejected/dirty candidates: `{rejected_count}`.",
         f"Deferred candidates: `{deferred_count}`.",
-        f"Join-readiness checks attempted: `{join_attempted_count > 0}`.",
+        f"Join-readiness checks attempted: `{join_readiness_attempted}`.",
+        f"Join-readiness checks deferred: `{join_readiness_deferred}`.",
         f"Bar-count preservation maintained where attempted: `{join_bar_count_preserved and not join_bar_count_not_preserved}`.",
         PRODUCTION_APPROVAL_STATEMENT,
         "",
@@ -932,6 +1037,8 @@ def build_report(
                 {
                     "file_date": result.file_date,
                     "bar_file_found": result.bar_file_found,
+                    "bar_file_path": result.bar_file_path,
+                    "bar_shard_resolution_strategy": result.bar_shard_resolution_strategy,
                     "bar_row_count": result.bar_row_count,
                     "join_attempted": result.join_attempted,
                     "bar_count_preserved": result.bar_count_preserved,
@@ -939,8 +1046,14 @@ def build_report(
                 }
                 for result in join_results
             ],
-            ["file_date", "bar_file_found", "bar_row_count", "join_attempted", "bar_count_preserved", "join_deferred_reason"],
+            ["file_date", "bar_file_found", "bar_file_path", "bar_shard_resolution_strategy", "bar_row_count", "join_attempted", "bar_count_preserved", "join_deferred_reason"],
         ),
+        "",
+        "## Bar Shard Results",
+        f"- `bar_size`: `{bar_size}`",
+        f"- `bar_shard_resolution_strategy`: `day -> month -> bar-size-filtered fallback`",
+        f"- `bar_month_shard_count`: `{bar_month_shard_count}`",
+        f"- `bar_day_shard_count`: `{bar_day_shard_count}`",
         "",
         "## Dry-Run Classification Summary",
         _markdown_table(
@@ -999,12 +1112,14 @@ def build_report(
         "- Metadata-only projection: `symbol=BTCUSDT/date=YYYY-MM-DD/hour=HH`.",
         "- The plan is estimated from bounded dry-run classification only.",
         "- No OFI output partitions were written.",
+        "- Bar shard resolution strategy: `day` first, then `month`, then a bar-size-filtered fallback scan.",
         "",
         "## What Worked",
         "- The reusable policy module was used directly.",
         "- Candidate files were selected deterministically.",
         "- Source-gap and snapshot/reset bridge validation paths were exercised without writing OFI artifacts.",
-        "- Join-readiness was evaluated as metadata, but all selected checks were deferred because matching bar files were not found under the provided bar_dir.",
+        "- Join-readiness was evaluated as metadata, and the manifest now resolves 750 BTC day/month bar shards before deferring any unresolved dates.",
+        "- The report distinguishes join attempts, deferrals, and bar-count preservation outcomes.",
         "",
         "## What Failed Or Remains Unknown",
         "- The manifest is bounded; it does not guarantee full-corpus cleanliness.",
@@ -1035,6 +1150,7 @@ def run_validation(
     *,
     l2_root: Path,
     bar_dir: Path,
+    bar_size: str,
     max_candidate_files: int,
     preview_rows_per_file: int,
     max_policy_check_files: int,
@@ -1042,6 +1158,9 @@ def run_validation(
     candidate_file_args: list[str] | None,
 ) -> dict[str, Any]:
     all_paths = discover_all_candidate_paths(l2_root, "BTCUSDT")
+    bar_files = _collect_bar_files(bar_dir, "BTCUSDT", bar_size)
+    bar_month_shard_count = sum(1 for path in bar_files if _bar_file_resolution_strategy(path, _bar_file_date_hint(path)) == "month")
+    bar_day_shard_count = sum(1 for path in bar_files if _bar_file_resolution_strategy(path, _bar_file_date_hint(path)) == "day")
     candidate_inputs, discovered_file_count = select_candidate_files(all_paths, max_candidate_files, candidate_file_args)
     previews: list[CandidatePreview] = []
     for candidate in candidate_inputs:
@@ -1068,14 +1187,18 @@ def run_validation(
 
     join_results: list[JoinReadinessResult] = []
     for result in policy_results:
-        join_results.append(_build_join_readiness_result(bar_dir, "BTCUSDT", result.file_date))
+        join_results.append(_build_join_readiness_result(bar_dir, "BTCUSDT", bar_size, result.file_date))
 
     report = build_report(
         discovered_file_count=discovered_file_count,
+        discovered_bar_count=len(bar_files),
+        bar_month_shard_count=bar_month_shard_count,
+        bar_day_shard_count=bar_day_shard_count,
         candidate_inputs=candidate_inputs,
         previews=previews,
         policy_results=policy_results,
         join_results=join_results,
+        bar_size=bar_size,
         max_candidate_files=max_candidate_files,
         preview_rows_per_file=preview_rows_per_file,
         max_policy_check_files=max_policy_check_files,
@@ -1094,6 +1217,7 @@ def main(argv: list[str] | None = None) -> int:
     run_validation(
         l2_root=args.l2_root,
         bar_dir=args.bar_dir,
+        bar_size=args.bar_size,
         max_candidate_files=args.max_candidate_files,
         preview_rows_per_file=args.preview_rows_per_file,
         max_policy_check_files=args.max_policy_check_files,

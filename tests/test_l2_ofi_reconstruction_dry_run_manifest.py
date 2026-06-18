@@ -313,10 +313,14 @@ def test_report_includes_no_production_no_alpha_no_full_reconstruction_statement
 
     report = script.build_report(
         discovered_file_count=1,
+        discovered_bar_count=1,
+        bar_month_shard_count=1,
+        bar_day_shard_count=0,
         candidate_inputs=candidate_inputs,
         previews=previews,
         policy_results=policy_results,
         join_results=join_results,
+        bar_size="750btc",
         max_candidate_files=720,
         preview_rows_per_file=25_000,
         max_policy_check_files=80,
@@ -335,10 +339,14 @@ def test_report_includes_no_production_no_alpha_no_full_reconstruction_statement
 def test_report_marks_smoke_scope_and_does_not_claim_full_manifest_for_smaller_budget():
     report = script.build_report(
         discovered_file_count=1,
+        discovered_bar_count=0,
+        bar_month_shard_count=0,
+        bar_day_shard_count=0,
         candidate_inputs=[],
         previews=[],
         policy_results=[],
         join_results=[],
+        bar_size="750btc",
         max_candidate_files=80,
         preview_rows_per_file=5_000,
         max_policy_check_files=20,
@@ -356,6 +364,9 @@ def test_report_marks_smoke_scope_and_does_not_claim_full_manifest_for_smaller_b
 def test_report_marks_join_readiness_deferred_when_all_checks_are_deferred():
     report = script.build_report(
         discovered_file_count=1,
+        discovered_bar_count=0,
+        bar_month_shard_count=0,
+        bar_day_shard_count=0,
         candidate_inputs=[],
         previews=[],
         policy_results=[],
@@ -369,6 +380,7 @@ def test_report_marks_join_readiness_deferred_when_all_checks_are_deferred():
                 join_deferred_reason="bar_file_missing",
             )
         ],
+        bar_size="750btc",
         max_candidate_files=80,
         preview_rows_per_file=5_000,
         max_policy_check_files=20,
@@ -377,12 +389,16 @@ def test_report_marks_join_readiness_deferred_when_all_checks_are_deferred():
     assert "bar_count_preservation_not_applicable" in report
     assert "bar_count_preserved_where_attempted" not in report
     assert "bar_count_not_preserved_where_attempted" not in report
-    assert "Join-readiness was evaluated as metadata, but all selected checks were deferred because matching bar files were not found under the provided bar_dir." in report
+    assert "join_readiness_deferred_bar_files_missing" in report
+    assert "bar_count_preservation_not_applicable" in report
 
 
 def test_report_marks_bar_count_preserved_where_attempted_only_when_all_attempted_joins_preserve():
     report = script.build_report(
         discovered_file_count=1,
+        discovered_bar_count=1,
+        bar_month_shard_count=1,
+        bar_day_shard_count=0,
         candidate_inputs=[],
         previews=[],
         policy_results=[],
@@ -396,6 +412,7 @@ def test_report_marks_bar_count_preserved_where_attempted_only_when_all_attempte
                 join_deferred_reason=None,
             )
         ],
+        bar_size="750btc",
         max_candidate_files=80,
         preview_rows_per_file=5_000,
         max_policy_check_files=20,
@@ -409,6 +426,9 @@ def test_report_marks_bar_count_preserved_where_attempted_only_when_all_attempte
 def test_report_marks_bar_count_not_preserved_where_attempted_when_any_join_fails():
     report = script.build_report(
         discovered_file_count=1,
+        discovered_bar_count=1,
+        bar_month_shard_count=1,
+        bar_day_shard_count=0,
         candidate_inputs=[],
         previews=[],
         policy_results=[],
@@ -422,6 +442,7 @@ def test_report_marks_bar_count_not_preserved_where_attempted_when_any_join_fail
                 join_deferred_reason=None,
             )
         ],
+        bar_size="750btc",
         max_candidate_files=80,
         preview_rows_per_file=5_000,
         max_policy_check_files=20,
@@ -439,12 +460,85 @@ def test_join_readiness_result_handles_attempted_and_deferred_without_writing(mo
             "close_time": [1_000_000_000, 2_000_000_000],
         }
     )
-    monkeypatch.setattr(script, "_find_bar_file", lambda bar_dir, symbol, file_date: Path("/tmp/bar.parquet") if file_date == "2026-01-01" else None)
+    monkeypatch.setattr(script, "_find_bar_file", lambda bar_dir, symbol, bar_size, file_date: (Path("/tmp/bar.parquet"), "month") if file_date == "2026-01-01" else (None, None))
     monkeypatch.setattr(script, "_load_bar_frame", lambda path: bars)
-    result = script._build_join_readiness_result(Path("/tmp"), "BTCUSDT", "2026-01-01")
-    deferred = script._build_join_readiness_result(Path("/tmp"), "BTCUSDT", None)
+    result = script._build_join_readiness_result(Path("/tmp"), "BTCUSDT", "750btc", "2026-01-01")
+    deferred = script._build_join_readiness_result(Path("/tmp"), "BTCUSDT", "750btc", None)
 
     assert result.join_attempted is True
     assert result.bar_count_preserved is True
     assert deferred.join_attempted is False
     assert deferred.join_deferred_reason == "file_date_unavailable"
+
+
+def test_exact_day_and_month_shard_resolution_and_no_accidental_500btc_selection(tmp_path):
+    bar_dir = tmp_path / "bars"
+    bar_dir.mkdir()
+    day_file = bar_dir / "BTCUSDT_tier2_750btc_2025-06-28.parquet"
+    month_file = bar_dir / "BTCUSDT_tier2_750btc_2025-06.parquet"
+    wrong_file = bar_dir / "BTCUSDT_tier2_500btc_2025-06-28.parquet"
+    pl.DataFrame({"open_time": [0], "close_time": [1]}).write_parquet(day_file)
+    pl.DataFrame({"open_time": [0], "close_time": [1]}).write_parquet(month_file)
+    pl.DataFrame({"open_time": [0], "close_time": [1]}).write_parquet(wrong_file)
+
+    resolved_day, strategy_day = script._find_bar_file(bar_dir, "BTCUSDT", "750btc", "2025-06-28")
+    resolved_month, strategy_month = script._find_bar_file(bar_dir, "BTCUSDT", "750btc", "2025-06-29")
+    resolved_missing, strategy_missing = script._find_bar_file(bar_dir, "BTCUSDT", "750btc", "2025-07-01")
+    resolved_wrong_size, _ = script._find_bar_file(bar_dir, "BTCUSDT", "500btc", "2025-06-28")
+
+    assert resolved_day == day_file
+    assert strategy_day == "day"
+    assert resolved_month == month_file
+    assert strategy_month == "month"
+    assert resolved_missing is None
+    assert strategy_missing is None
+    assert resolved_wrong_size == wrong_file
+
+
+def test_build_report_marks_deferred_when_no_joins_attempted_and_preservation_not_applicable():
+    report = script.build_report(
+        discovered_file_count=1,
+        discovered_bar_count=0,
+        bar_month_shard_count=0,
+        bar_day_shard_count=0,
+        candidate_inputs=[],
+        previews=[],
+        policy_results=[],
+        join_results=[],
+        bar_size="750btc",
+        max_candidate_files=80,
+        preview_rows_per_file=5_000,
+        max_policy_check_files=20,
+    )
+    assert "bar_count_preservation_not_applicable" in report
+    assert "bar_count_preserved_where_attempted" not in report
+    assert "bar_count_not_preserved_where_attempted" not in report
+    assert "join_readiness_deferred_bar_files_missing" not in report
+
+
+def test_build_report_marks_month_and_day_shard_resolution_and_join_attempts(tmp_path):
+    day_file = tmp_path / "BTCUSDT_tier2_750btc_2025-06-28.parquet"
+    month_file = tmp_path / "BTCUSDT_tier2_750btc_2025-06.parquet"
+    pl.DataFrame({"open_time": [0], "close_time": [1]}).write_parquet(day_file)
+    pl.DataFrame({"open_time": [0], "close_time": [1]}).write_parquet(month_file)
+    day_result = script._build_join_readiness_result(tmp_path, "BTCUSDT", "750btc", "2025-06-28")
+    month_result = script._build_join_readiness_result(tmp_path, "BTCUSDT", "750btc", "2025-06-29")
+    report = script.build_report(
+        discovered_file_count=2,
+        discovered_bar_count=2,
+        bar_month_shard_count=1,
+        bar_day_shard_count=1,
+        candidate_inputs=[],
+        previews=[],
+        policy_results=[],
+        join_results=[day_result, month_result],
+        bar_size="750btc",
+        max_candidate_files=80,
+        preview_rows_per_file=5_000,
+        max_policy_check_files=20,
+    )
+    assert "bar_month_shards_resolved" in report
+    assert "bar_day_shards_resolved" in report
+    assert "join_readiness_checked_where_possible" in report
+    assert "bar_count_preserved_where_attempted" in report
+    assert "bar_count_preservation_not_applicable" not in report
