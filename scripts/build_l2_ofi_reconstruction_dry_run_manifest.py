@@ -709,19 +709,26 @@ def build_report(
     join_bar_count_preserved = any(value is True for value in preserved_attempted)
     join_bar_count_not_preserved = any(value is False for value in preserved_attempted)
     join_attempted_any = join_attempted_count > 0
+    join_all_deferred = len(join_results) > 0 and join_attempted_count == 0
 
     decision_labels = [
         "bounded_read_only_dry_run",
         "candidate_selection_deterministic",
         "policy_module_used_directly",
         "policy_check_bounded_only",
-        "join_readiness_checked_where_possible" if join_attempted_any else "join_readiness_not_attempted",
         "no_ofi_artifacts_written",
         "full_reconstruction_not_approved",
         "segmented_reconstruction_still_bounded_only",
         "alpha_blocked",
         "paper_live_blocked",
     ]
+    if join_all_deferred:
+        decision_labels.append("join_readiness_deferred_bar_files_missing")
+    elif join_attempted_any:
+        decision_labels.append("join_readiness_checked_where_possible")
+    else:
+        decision_labels.append("join_readiness_not_attempted")
+    decision_labels.append("full_bounded_manifest_completed" if dry_run_scope == "full_bounded_manifest" else "smoke_bounded_manifest_completed")
     if accepted_count > 0:
         decision_labels.append("accepted_bounded_clean_candidates_found")
     if source_gap_clean_count > 0:
@@ -734,10 +741,12 @@ def build_report(
         decision_labels.append("rejected_dirty_candidates_found")
     if deferred_count > 0:
         decision_labels.append("deferred_candidates_found")
-    if join_bar_count_preserved and not join_bar_count_not_preserved and join_attempted_any:
+    if join_attempted_any and join_bar_count_preserved and not join_bar_count_not_preserved:
         decision_labels.append("bar_count_preserved_where_attempted")
-    if join_bar_count_not_preserved:
+    elif join_attempted_any and join_bar_count_not_preserved:
         decision_labels.append("bar_count_not_preserved_where_attempted")
+    elif join_all_deferred:
+        decision_labels.append("bar_count_preservation_not_applicable")
 
     selected_preview_map = {preview.candidate_file_path: preview for preview in previews}
 
@@ -995,7 +1004,7 @@ def build_report(
         "- The reusable policy module was used directly.",
         "- Candidate files were selected deterministically.",
         "- Source-gap and snapshot/reset bridge validation paths were exercised without writing OFI artifacts.",
-        "- Join-readiness checks were attempted where bar files were available.",
+        "- Join-readiness was evaluated as metadata, but all selected checks were deferred because matching bar files were not found under the provided bar_dir.",
         "",
         "## What Failed Or Remains Unknown",
         "- The manifest is bounded; it does not guarantee full-corpus cleanliness.",
@@ -1012,46 +1021,7 @@ def build_report(
         "- Alpha claims.",
         "",
         "## Decision",
-        ", ".join(
-            [
-                "bounded_read_only_dry_run",
-                "candidate_selection_deterministic",
-                "policy_module_used_directly",
-                "policy_check_bounded_only",
-                "join_readiness_checked_where_possible",
-                "no_ofi_artifacts_written",
-                "full_reconstruction_not_approved",
-                "segmented_reconstruction_still_bounded_only",
-                "alpha_blocked",
-                "paper_live_blocked",
-                "full_bounded_manifest_completed" if dry_run_scope == "full_bounded_manifest" else "smoke_bounded_manifest_completed",
-                *(
-                    ["accepted_bounded_clean_candidates_found"] if accepted_count > 0 else []
-                ),
-                *(
-                    ["source_gap_clean_candidates_found"] if source_gap_clean_count > 0 else []
-                ),
-                *(
-                    ["snapshot_bridge_clean_candidates_found"] if snapshot_bridge_clean_count > 0 else []
-                ),
-                *(
-                    ["quarantined_candidates_found"] if quarantined_count > 0 else []
-                ),
-                *(
-                    ["rejected_dirty_candidates_found"] if rejected_count > 0 else []
-                ),
-                *(
-                    ["deferred_candidates_found"] if deferred_count > 0 else []
-                ),
-                *(
-                    ["bar_count_preserved_where_attempted"] if join_bar_count_preserved and not join_bar_count_not_preserved and join_attempted_any else []
-                ),
-                *(
-                    ["bar_count_not_preserved_where_attempted"] if join_bar_count_not_preserved else []
-                ),
-            ]
-        )
-        + ".",
+        ", ".join(decision_labels) + ".",
         "",
         "## Required Next Step",
         "Continue bounded read-only regression checks only; do not promote the workflow to full reconstruction or artifact generation.",

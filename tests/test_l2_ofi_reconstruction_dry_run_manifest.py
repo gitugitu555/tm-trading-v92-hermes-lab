@@ -353,6 +353,85 @@ def test_report_marks_smoke_scope_and_does_not_claim_full_manifest_for_smaller_b
     assert "This dry-run manifest does not approve OFI for production, paper trading, live trading, alpha use, or full historical reconstruction." in report
 
 
+def test_report_marks_join_readiness_deferred_when_all_checks_are_deferred():
+    report = script.build_report(
+        discovered_file_count=1,
+        candidate_inputs=[],
+        previews=[],
+        policy_results=[],
+        join_results=[
+            script.JoinReadinessResult(
+                file_date="2026-01-01",
+                bar_file_found=False,
+                bar_row_count=None,
+                join_attempted=False,
+                bar_count_preserved=None,
+                join_deferred_reason="bar_file_missing",
+            )
+        ],
+        max_candidate_files=80,
+        preview_rows_per_file=5_000,
+        max_policy_check_files=20,
+    )
+    assert "join_readiness_deferred_bar_files_missing" in report
+    assert "bar_count_preservation_not_applicable" in report
+    assert "bar_count_preserved_where_attempted" not in report
+    assert "bar_count_not_preserved_where_attempted" not in report
+    assert "Join-readiness was evaluated as metadata, but all selected checks were deferred because matching bar files were not found under the provided bar_dir." in report
+
+
+def test_report_marks_bar_count_preserved_where_attempted_only_when_all_attempted_joins_preserve():
+    report = script.build_report(
+        discovered_file_count=1,
+        candidate_inputs=[],
+        previews=[],
+        policy_results=[],
+        join_results=[
+            script.JoinReadinessResult(
+                file_date="2026-01-01",
+                bar_file_found=True,
+                bar_row_count=10,
+                join_attempted=True,
+                bar_count_preserved=True,
+                join_deferred_reason=None,
+            )
+        ],
+        max_candidate_files=80,
+        preview_rows_per_file=5_000,
+        max_policy_check_files=20,
+    )
+    assert "join_readiness_checked_where_possible" in report
+    assert "bar_count_preserved_where_attempted" in report
+    assert "bar_count_not_preserved_where_attempted" not in report
+    assert "bar_count_preservation_not_applicable" not in report
+
+
+def test_report_marks_bar_count_not_preserved_where_attempted_when_any_join_fails():
+    report = script.build_report(
+        discovered_file_count=1,
+        candidate_inputs=[],
+        previews=[],
+        policy_results=[],
+        join_results=[
+            script.JoinReadinessResult(
+                file_date="2026-01-01",
+                bar_file_found=True,
+                bar_row_count=10,
+                join_attempted=True,
+                bar_count_preserved=False,
+                join_deferred_reason=None,
+            )
+        ],
+        max_candidate_files=80,
+        preview_rows_per_file=5_000,
+        max_policy_check_files=20,
+    )
+    assert "join_readiness_checked_where_possible" in report
+    assert "bar_count_not_preserved_where_attempted" in report
+    assert "bar_count_preserved_where_attempted" not in report
+    assert "bar_count_preservation_not_applicable" not in report
+
+
 def test_join_readiness_result_handles_attempted_and_deferred_without_writing(monkeypatch):
     bars = pl.DataFrame(
         {

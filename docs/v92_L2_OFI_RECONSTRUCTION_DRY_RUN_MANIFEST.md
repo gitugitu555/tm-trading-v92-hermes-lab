@@ -224,7 +224,7 @@ This dry-run manifest does not approve OFI for production, paper trading, live t
 - The reusable policy module was used directly.
 - Candidate files were selected deterministically.
 - Source-gap and snapshot/reset bridge validation paths were exercised without writing OFI artifacts.
-- Join-readiness checks were attempted where bar files were available.
+- Join-readiness was evaluated as metadata, but all selected checks were deferred because matching bar files were not found under the provided bar_dir.
 
 ## What Failed Or Remains Unknown
 - The manifest is bounded; it does not guarantee full-corpus cleanliness.
@@ -241,7 +241,7 @@ This dry-run manifest does not approve OFI for production, paper trading, live t
 - Alpha claims.
 
 ## Decision
-bounded_read_only_dry_run, candidate_selection_deterministic, policy_module_used_directly, policy_check_bounded_only, join_readiness_checked_where_possible, no_ofi_artifacts_written, full_reconstruction_not_approved, segmented_reconstruction_still_bounded_only, alpha_blocked, paper_live_blocked, smoke_bounded_manifest_completed, accepted_bounded_clean_candidates_found, source_gap_clean_candidates_found, snapshot_bridge_clean_candidates_found.
+bounded_read_only_dry_run, candidate_selection_deterministic, policy_module_used_directly, policy_check_bounded_only, no_ofi_artifacts_written, full_reconstruction_not_approved, segmented_reconstruction_still_bounded_only, alpha_blocked, paper_live_blocked, join_readiness_deferred_bar_files_missing, smoke_bounded_manifest_completed, accepted_bounded_clean_candidates_found, source_gap_clean_candidates_found, snapshot_bridge_clean_candidates_found, bar_count_preservation_not_applicable.
 
 ## Required Next Step
 Continue bounded read-only regression checks only; do not promote the workflow to full reconstruction or artifact generation.
