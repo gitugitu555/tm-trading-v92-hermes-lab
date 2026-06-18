@@ -18,9 +18,9 @@ Estimate which raw L2 files would be selected, skipped, rejected, quarantined, o
 - `bar_day_shard_count`: `31`
 - `previewed_file_count`: `80`
 - `policy_checked_file_count`: `20`
-- `join_attempted_count`: `10`
-- `join_deferred_count`: `10`
-- `join_preserved_count`: `10`
+- `join_attempted_count`: `8`
+- `join_deferred_count`: `12`
+- `join_preserved_count`: `8`
 - `join_not_preserved_count`: `0`
 
 ## Read-Only Guardrails
@@ -137,9 +137,9 @@ Discovered files under `l2_root`: `8074`.
 Discovered bar files under `bar_dir`: `102`.
 Files previewed: `80`.
 Files policy-checked: `20`.
-Join-readiness attempted: `10`.
-Join-readiness deferred: `10`.
-Join-readiness preserved where attempted: `10`.
+Join-readiness attempted: `8`.
+Join-readiness deferred: `12`.
+Join-readiness preserved where attempted: `8`.
 Join-readiness not preserved where attempted: `0`.
 Accepted bounded-clean candidates: `20`.
 Source-gap-clean candidates: `6`.
@@ -187,8 +187,8 @@ This dry-run manifest does not approve OFI for production, paper trading, live t
 | 2025-07-03 | true | /home/tokio/tm-trading-v92-phase1f/bars_750btc/BTCUSDT_tier2_750btc_2025-07.parquet | month | 646 | true | true | null |
 | 2025-08-28 | true | /home/tokio/tm-trading-v92-phase1f/bars_750btc/BTCUSDT_tier2_750btc_2025-08.parquet | month | 629 | true | true | null |
 | 2025-12-22 | true | /home/tokio/tm-trading-v92-phase1f/bars_750btc/BTCUSDT_tier2_750btc_2025-12.parquet | month | 655 | true | true | null |
-| 2026-05-26 | true | /home/tokio/tm-trading-v92-phase1f/bars_750btc/BTCUSDT_tier2_750btc_2026-05-01.parquet | fallback | 24 | true | true | null |
-| 2026-05-26 | true | /home/tokio/tm-trading-v92-phase1f/bars_750btc/BTCUSDT_tier2_750btc_2026-05-01.parquet | fallback | 24 | true | true | null |
+| 2026-05-26 | false | null | null | null | false | null | bar_file_missing |
+| 2026-05-26 | false | null | null | null | false | null | bar_file_missing |
 | 2026-06-07 | false | null | null | null | false | null | bar_file_missing |
 | 2026-06-07 | false | null | null | null | false | null | bar_file_missing |
 | 2026-06-07 | false | null | null | null | false | null | bar_file_missing |

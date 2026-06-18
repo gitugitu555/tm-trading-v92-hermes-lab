@@ -495,6 +495,18 @@ def test_exact_day_and_month_shard_resolution_and_no_accidental_500btc_selection
     assert resolved_wrong_size == wrong_file
 
 
+def test_wrong_same_month_day_shard_and_no_2026_misroute(tmp_path):
+    bar_dir = tmp_path / "bars"
+    bar_dir.mkdir()
+    wrong_day_file = bar_dir / "BTCUSDT_tier2_750btc_2026-05-01.parquet"
+    pl.DataFrame({"open_time": [0], "close_time": [1]}).write_parquet(wrong_day_file)
+
+    resolved, strategy = script._find_bar_file(bar_dir, "BTCUSDT", "750btc", "2026-05-26")
+
+    assert resolved is None
+    assert strategy is None
+
+
 def test_build_report_marks_deferred_when_no_joins_attempted_and_preservation_not_applicable():
     report = script.build_report(
         discovered_file_count=1,
@@ -542,3 +554,14 @@ def test_build_report_marks_month_and_day_shard_resolution_and_join_attempts(tmp
     assert "join_readiness_checked_where_possible" in report
     assert "bar_count_preserved_where_attempted" in report
     assert "bar_count_preservation_not_applicable" not in report
+
+
+def test_join_attempts_are_deferred_when_only_wrong_day_shard_exists(tmp_path):
+    wrong_day_file = tmp_path / "BTCUSDT_tier2_750btc_2026-05-01.parquet"
+    pl.DataFrame({"open_time": [0], "close_time": [1]}).write_parquet(wrong_day_file)
+    result = script._build_join_readiness_result(tmp_path, "BTCUSDT", "750btc", "2026-05-26")
+
+    assert result.join_attempted is False
+    assert result.join_deferred_reason == "bar_file_missing"
+    assert result.bar_file_found is False
+    assert result.bar_file_path is None

@@ -697,13 +697,7 @@ def _find_bar_file(bar_dir: Path, symbol: str, bar_size: str, file_date: str | N
         matches = sorted(root.rglob(pattern))
         if matches:
             return matches[0], "month"
-
-    fallback_candidates = []
-    for path in _collect_bar_files(root, symbol, bar_size):
-        hint = _bar_file_date_hint(path)
-        if hint == file_date or (hint is not None and hint.startswith(month)):
-            fallback_candidates.append(path)
-    return (fallback_candidates[0], "fallback") if fallback_candidates else (None, None)
+    return None, None
 
 
 def _load_bar_frame(bar_path: Path) -> pl.DataFrame:
