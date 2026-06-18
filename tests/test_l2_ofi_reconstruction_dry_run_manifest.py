@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import polars as pl
+import pytest
 
 import scripts.build_l2_ofi_reconstruction_dry_run_manifest as script
 
@@ -554,6 +555,149 @@ def test_build_report_marks_month_and_day_shard_resolution_and_join_attempts(tmp
     assert "join_readiness_checked_where_possible" in report
     assert "bar_count_preserved_where_attempted" in report
     assert "bar_count_preservation_not_applicable" not in report
+
+
+def test_candidate_batch_partitioning_is_deterministic_and_non_overlapping():
+    candidates = [
+        script.CandidateFile(path=Path(f"/tmp/file_{idx:03d}.parquet.zst"), candidate_reason="evenly_spaced")
+        for idx in range(10)
+    ]
+    batch0 = script._partition_candidate_batch(candidates, candidate_batch_index=0, candidate_batch_count=4)
+    batch1 = script._partition_candidate_batch(candidates, candidate_batch_index=1, candidate_batch_count=4)
+    batch2 = script._partition_candidate_batch(candidates, candidate_batch_index=2, candidate_batch_count=4)
+    batch3 = script._partition_candidate_batch(candidates, candidate_batch_index=3, candidate_batch_count=4)
+
+    assert [item.path for item in batch0 + batch1 + batch2 + batch3] == [item.path for item in candidates]
+    assert set(batch0).isdisjoint(batch1)
+    assert set(batch1).isdisjoint(batch2)
+    assert set(batch2).isdisjoint(batch3)
+    assert len(batch0) == 2
+    assert len(batch1) == 3
+    assert len(batch2) == 2
+    assert len(batch3) == 3
+
+
+def test_candidate_batch_index_out_of_range_fails_cleanly():
+    candidates = [script.CandidateFile(path=Path("/tmp/file.parquet.zst"), candidate_reason="evenly_spaced")]
+    with pytest.raises(ValueError, match="candidate_batch_index must be within"):
+        script._partition_candidate_batch(candidates, candidate_batch_index=4, candidate_batch_count=4)
+
+
+def test_batch_report_uses_full_bounded_manifest_batch_scope_and_labels():
+    report = script.build_report(
+        discovered_file_count=10,
+        discovered_bar_count=2,
+        bar_month_shard_count=1,
+        bar_day_shard_count=1,
+        candidate_batch_index=0,
+        candidate_batch_count=4,
+        candidate_inputs=[],
+        previews=[],
+        policy_results=[],
+        join_results=[],
+        bar_size="750btc",
+        max_candidate_files=720,
+        preview_rows_per_file=25_000,
+        max_policy_check_files=80,
+    )
+    assert "## Dry-Run Scope" in report
+    assert "full_bounded_manifest_batch" in report
+    assert "candidate_batch_index`: `0`" in report
+    assert "candidate_batch_count`: `4`" in report
+    assert "full_bounded_manifest_batch_completed" in report
+    assert "full_bounded_manifest_completed" not in report
+    assert script.PRODUCTION_APPROVAL_STATEMENT in report
+
+
+def test_batch_mode_does_not_write_ofi_artifacts(tmp_path, monkeypatch):
+    l2_root = tmp_path / "l2"
+    bar_dir = tmp_path / "bars"
+    l2_root.mkdir()
+    bar_dir.mkdir()
+    output_doc = tmp_path / "batch_00.md"
+    candidates = [
+        script.CandidateFile(path=Path(f"/tmp/file_{idx:03d}.parquet.zst"), candidate_reason="evenly_spaced")
+        for idx in range(8)
+    ]
+    previews = [
+        script.CandidatePreview(
+            candidate_file_path=item.path.as_posix(),
+            file_date="2026-01-01",
+            file_hour="00",
+            preview_row_count=1,
+            preview_packet_count=1,
+            missing_required_column_count=0,
+            missing_transaction_time_count=0,
+            snapshot_like_packet_count=0,
+            estimated_source_gap_count=0,
+            timestamp_non_monotonic_hint_count=0,
+            side_mapping_unknown_count=0,
+            candidate_reason=item.candidate_reason,
+            candidate_score=idx,
+            dry_run_policy_class="policy_check_selected",
+        )
+        for idx, item in enumerate(candidates[:2])
+    ]
+    policy_result = script.PolicyCheckResult(
+        file_path=candidates[0].path.as_posix(),
+        file_date="2026-01-01",
+        file_hour="00",
+        rows_scanned=1,
+        packet_count=1,
+        segment_count=1,
+        meaningful_segment_count=1,
+        clean_segment_count=1,
+        dirty_segment_count=0,
+        all_segments_clean=True,
+        source_gap_boundary_count=0,
+        snapshot_like_packet_count=0,
+        snapshot_bridge_event_count=0,
+        snapshot_reset_clean_seed_count=0,
+        snapshot_reset_chain_failure_count=0,
+        quarantined_segment_count=0,
+        total_ofi_emitted_count=1,
+        total_warmup_none_count=0,
+        total_sequence_gap_count=0,
+        ofi_suppressed_due_to_snapshot_bridge_count=0,
+        ofi_suppressed_due_to_quarantine_count=0,
+        policy_check_status="accepted_bounded_clean",
+        candidate_reason="evenly_spaced",
+        candidate_score=1,
+        dry_run_policy_class="policy_check_selected",
+    )
+    join_result = script.JoinReadinessResult(
+        file_date="2026-01-01",
+        bar_file_found=True,
+        bar_file_path="/tmp/bar.parquet",
+        bar_shard_resolution_strategy="month",
+        bar_row_count=1,
+        join_attempted=True,
+        bar_count_preserved=True,
+        join_deferred_reason=None,
+    )
+    monkeypatch.setattr(script, "discover_all_candidate_paths", lambda l2_root, symbol: candidates)
+    monkeypatch.setattr(script, "select_candidate_files", lambda all_paths, max_candidate_files, candidate_file_args: (candidates, len(candidates)))
+    monkeypatch.setattr(script, "preview_candidate_file", lambda path, candidate_reason, max_rows: previews[0] if path == candidates[0].path else previews[1])
+    monkeypatch.setattr(script, "_select_policy_check_candidates", lambda previews, max_policy_check_files: {candidates[0].path.as_posix()})
+    monkeypatch.setattr(script, "_run_policy_check", lambda preview, path, max_rows: policy_result)
+    monkeypatch.setattr(script, "_build_join_readiness_result", lambda bar_dir, symbol, bar_size, file_date: join_result)
+    monkeypatch.setattr(script, "_collect_bar_files", lambda bar_dir, symbol, bar_size: [bar_dir / "BTCUSDT_tier2_750btc_2026-01.parquet"])
+    monkeypatch.setattr(script, "_load_bar_frame", lambda path: pl.DataFrame({"open_time": [0], "close_time": [1]}))
+    result = script.run_validation(
+        l2_root=l2_root,
+        bar_dir=bar_dir,
+        bar_size="750btc",
+        max_candidate_files=720,
+        preview_rows_per_file=25_000,
+        max_policy_check_files=80,
+        candidate_batch_index=0,
+        candidate_batch_count=4,
+        output_doc=output_doc,
+        candidate_file_args=None,
+    )
+    assert output_doc.exists()
+    assert result["discovered_file_count"] == len(candidates)
+    assert len(list(tmp_path.iterdir())) == 3
 
 
 def test_join_attempts_are_deferred_when_only_wrong_day_shard_exists(tmp_path):

@@ -185,6 +185,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-candidate-files", type=int, default=720)
     parser.add_argument("--preview-rows-per-file", type=int, default=25_000)
     parser.add_argument("--max-policy-check-files", type=int, default=80)
+    parser.add_argument("--candidate-batch-index", type=int, default=None)
+    parser.add_argument("--candidate-batch-count", type=int, default=None)
     parser.add_argument("--output-doc", type=Path, required=True)
     parser.add_argument("--candidate-file", action="append", default=None)
     return parser.parse_args(argv)
@@ -214,7 +216,11 @@ def _dry_run_scope_label(
     max_candidate_files: int,
     preview_rows_per_file: int,
     max_policy_check_files: int,
+    candidate_batch_index: int | None = None,
+    candidate_batch_count: int | None = None,
 ) -> str:
+    if candidate_batch_index is not None or candidate_batch_count is not None:
+        return "full_bounded_manifest_batch"
     if (
         max_candidate_files == FULL_MANIFEST_BUDGET["max_candidate_files"]
         and preview_rows_per_file == FULL_MANIFEST_BUDGET["preview_rows_per_file"]
@@ -222,6 +228,26 @@ def _dry_run_scope_label(
     ):
         return "full_bounded_manifest"
     return "smoke_bounded_manifest"
+
+
+def _partition_candidate_batch(
+    candidates: list[CandidateFile],
+    *,
+    candidate_batch_index: int | None,
+    candidate_batch_count: int | None,
+) -> list[CandidateFile]:
+    if candidate_batch_index is None and candidate_batch_count is None:
+        return candidates
+    if candidate_batch_index is None or candidate_batch_count is None:
+        raise ValueError("candidate_batch_index and candidate_batch_count must both be provided together")
+    if candidate_batch_count <= 0:
+        raise ValueError("candidate_batch_count must be positive")
+    if candidate_batch_index < 0 or candidate_batch_index >= candidate_batch_count:
+        raise ValueError("candidate_batch_index must be within [0, candidate_batch_count)")
+    total = len(candidates)
+    start = (total * candidate_batch_index) // candidate_batch_count
+    end = (total * (candidate_batch_index + 1)) // candidate_batch_count
+    return candidates[start:end]
 
 
 def _file_date(path: Path) -> str | None:
@@ -739,6 +765,8 @@ def build_report(
     discovered_bar_count: int,
     bar_month_shard_count: int,
     bar_day_shard_count: int,
+    candidate_batch_index: int | None = None,
+    candidate_batch_count: int | None = None,
     candidate_inputs: list[CandidateFile],
     previews: list[CandidatePreview],
     policy_results: list[PolicyCheckResult],
@@ -752,6 +780,8 @@ def build_report(
         max_candidate_files=max_candidate_files,
         preview_rows_per_file=preview_rows_per_file,
         max_policy_check_files=max_policy_check_files,
+        candidate_batch_index=candidate_batch_index,
+        candidate_batch_count=candidate_batch_count,
     )
     preview_count = len(previews)
     policy_check_count = len(policy_results)
@@ -807,7 +837,10 @@ def build_report(
         decision_labels.append("join_readiness_checked_where_possible")
     elif len(join_results) > 0:
         decision_labels.append("join_readiness_not_attempted")
-    decision_labels.append("full_bounded_manifest_completed" if dry_run_scope == "full_bounded_manifest" else "smoke_bounded_manifest_completed")
+    if dry_run_scope == "full_bounded_manifest_batch":
+        decision_labels.append("full_bounded_manifest_batch_completed")
+    else:
+        decision_labels.append("full_bounded_manifest_completed" if dry_run_scope == "full_bounded_manifest" else "smoke_bounded_manifest_completed")
     if accepted_count > 0:
         decision_labels.append("accepted_bounded_clean_candidates_found")
     if source_gap_clean_count > 0:
@@ -888,9 +921,14 @@ def build_report(
         f"- `preview_rows_per_file`: `{preview_rows_per_file}`",
         f"- `max_policy_check_files`: `{max_policy_check_files}`",
         f"- `bar_size`: `{bar_size}`",
+        f"- `candidate_batch_index`: `{candidate_batch_index}`",
+        f"- `candidate_batch_count`: `{candidate_batch_count}`",
         f"- `selected_file_count`: `{selected_count}`",
+        f"- `selected_file_count_for_batch`: `{selected_count}`",
         f"- `files_previewed`: `{preview_count}`",
+        f"- `files_previewed_for_batch`: `{preview_count}`",
         f"- `files_policy_checked`: `{policy_check_count}`",
+        f"- `files_policy_checked_for_batch`: `{policy_check_count}`",
         f"- `discovered_file_count`: `{discovered_file_count}`",
         f"- `discovered_bar_count`: `{discovered_bar_count}`",
         f"- `bar_month_shard_count`: `{bar_month_shard_count}`",
@@ -917,6 +955,8 @@ def build_report(
         "",
         "## Dry-Run Scope",
         f"- `{dry_run_scope}`",
+        f"- `candidate_batch_index`: `{candidate_batch_index}`",
+        f"- `candidate_batch_count`: `{candidate_batch_count}`",
         "",
         "## Candidate Selection Method",
         "Deterministic bounded selection anchored on known sample files, source-gap-heavy files, snapshot/reset bridge files, first/last chronological files, month-open files, day-boundary/hour-boundary files, 2026 files, and evenly spaced corpus files, capped to the configured preview budget.",
@@ -965,6 +1005,7 @@ def build_report(
         f"Quarantined candidates: `{quarantined_count}`.",
         f"Rejected/dirty candidates: `{rejected_count}`.",
         f"Deferred candidates: `{deferred_count}`.",
+        f"Selected files for batch: `{selected_count}`.",
         f"Join-readiness checks attempted: `{join_readiness_attempted}`.",
         f"Join-readiness checks deferred: `{join_readiness_deferred}`.",
         f"Bar-count preservation maintained where attempted: `{join_bar_count_preserved and not join_bar_count_not_preserved}`.",
@@ -1148,6 +1189,8 @@ def run_validation(
     max_candidate_files: int,
     preview_rows_per_file: int,
     max_policy_check_files: int,
+    candidate_batch_index: int | None,
+    candidate_batch_count: int | None,
     output_doc: Path,
     candidate_file_args: list[str] | None,
 ) -> dict[str, Any]:
@@ -1155,7 +1198,12 @@ def run_validation(
     bar_files = _collect_bar_files(bar_dir, "BTCUSDT", bar_size)
     bar_month_shard_count = sum(1 for path in bar_files if _bar_file_resolution_strategy(path, _bar_file_date_hint(path)) == "month")
     bar_day_shard_count = sum(1 for path in bar_files if _bar_file_resolution_strategy(path, _bar_file_date_hint(path)) == "day")
-    candidate_inputs, discovered_file_count = select_candidate_files(all_paths, max_candidate_files, candidate_file_args)
+    candidate_inputs_full, discovered_file_count = select_candidate_files(all_paths, max_candidate_files, candidate_file_args)
+    candidate_inputs = _partition_candidate_batch(
+        candidate_inputs_full,
+        candidate_batch_index=candidate_batch_index,
+        candidate_batch_count=candidate_batch_count,
+    )
     previews: list[CandidatePreview] = []
     for candidate in candidate_inputs:
         preview = preview_candidate_file(candidate.path, candidate_reason=candidate.candidate_reason, max_rows=preview_rows_per_file)
@@ -1188,6 +1236,8 @@ def run_validation(
         discovered_bar_count=len(bar_files),
         bar_month_shard_count=bar_month_shard_count,
         bar_day_shard_count=bar_day_shard_count,
+        candidate_batch_index=candidate_batch_index,
+        candidate_batch_count=candidate_batch_count,
         candidate_inputs=candidate_inputs,
         previews=previews,
         policy_results=policy_results,
@@ -1215,6 +1265,8 @@ def main(argv: list[str] | None = None) -> int:
         max_candidate_files=args.max_candidate_files,
         preview_rows_per_file=args.preview_rows_per_file,
         max_policy_check_files=args.max_policy_check_files,
+        candidate_batch_index=args.candidate_batch_index,
+        candidate_batch_count=args.candidate_batch_count,
         output_doc=args.output_doc,
         candidate_file_args=args.candidate_file,
     )
