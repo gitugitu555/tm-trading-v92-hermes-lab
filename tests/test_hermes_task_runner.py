@@ -31,12 +31,18 @@ def test_run_report_path_is_under_reports_hermes_runs(monkeypatch, tmp_path):
             "branch_name": "branch",
             "objective": "Objective",
         },
+        failed_attempt_count=0,
+        last_failure_reason="",
+        council_after_failed_attempts=2,
+        council_required=False,
+        council_decision_required_before_continue=False,
         assigned_agents=["vega_orchestrator"],
         allowed_files=["a.py"],
         forbidden_files=["b.py"],
         validation_commands=["pytest"],
         guard_result={"ok": True},
         branch_matches_task=False,
+        branch_warning="branch mismatch: expected branch, found feature/test",
         dry_run_prompt="prompt",
         next_steps=["next"],
     )
@@ -213,6 +219,7 @@ def test_branch_mismatch_remains_warning_field_in_dry_run(monkeypatch, tmp_path,
     runner.main(["--task-id", "TASK-001", "--json"])
     output = capsys.readouterr().out
     assert '"branch_matches_task": false' in output
+    assert '"branch_warning": "branch mismatch: expected expected/task, found actual/infra"' in output
 
 
 def test_generated_prompt_includes_repo_boundary(monkeypatch):

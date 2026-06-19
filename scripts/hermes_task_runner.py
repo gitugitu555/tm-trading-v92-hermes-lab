@@ -29,12 +29,18 @@ class RunReport:
     branch: str
     remotes: dict[str, str]
     task: dict[str, object]
+    failed_attempt_count: int
+    last_failure_reason: str
+    council_after_failed_attempts: int
+    council_required: bool
+    council_decision_required_before_continue: bool
     assigned_agents: list[str]
     allowed_files: list[str]
     forbidden_files: list[str]
     validation_commands: list[str]
     guard_result: dict[str, object]
     branch_matches_task: bool
+    branch_warning: str
     dry_run_prompt: str
     next_steps: list[str]
 
@@ -92,10 +98,16 @@ def _write_report(task_id: str, report: RunReport) -> Path:
             f"  - status: {report.task['status']}",
             f"  - branch_name: {report.task['branch_name']}",
             f"  - objective: {report.task['objective']}",
+            f"  - failed_attempt_count: {report.failed_attempt_count}",
+            f"  - last_failure_reason: {report.last_failure_reason}",
+            f"  - council_after_failed_attempts: {report.council_after_failed_attempts}",
+            f"  - council_required: {str(report.council_required).lower()}",
+            f"  - council_decision_required_before_continue: {str(report.council_decision_required_before_continue).lower()}",
             "- assigned_agents:",
         ]
     )
     lines.extend(f"  - {item}" for item in report.assigned_agents)
+    lines.append(f"- branch_warning: {report.branch_warning or 'none'}")
     lines.append("- allowed_files:")
     lines.extend(f"  - {item}" for item in report.allowed_files)
     lines.append("- forbidden_files:")
@@ -147,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=Path("reports/hermes_council"),
             execute_agents=False,
         )
+        council_branch = council_result["guard_result"].get("branch") or ""
         payload = {
             "ok": bool(council_result["ok"]),
             "task_id": task.task_id,
@@ -154,7 +167,12 @@ def main(argv: list[str] | None = None) -> int:
             "council_report_path": council_result["report_path"],
             "trigger_reason": trigger_reason,
             "failed_attempt_count": task.failed_attempt_count,
-            "branch_matches_task": (council_result["guard_result"].get("branch") or "") == task.branch_name,
+            "last_failure_reason": task.last_failure_reason,
+            "council_after_failed_attempts": task.council_after_failed_attempts,
+            "council_required": task.council_required,
+            "council_decision_required_before_continue": task.council_decision_required_before_continue,
+            "branch_matches_task": council_branch == task.branch_name,
+            "branch_warning": "" if council_branch == task.branch_name else f"branch mismatch: expected {task.branch_name}, found {council_branch or 'detached'}",
             "dry_run": not args.execute,
             "guard_result": council_result["guard_result"],
         }
@@ -165,11 +183,19 @@ def main(argv: list[str] | None = None) -> int:
             print("council_triggered: true")
             print(f"council_report_path: {council_result['report_path']}")
             print(f"trigger_reason: {trigger_reason}")
+            print(f"failed_attempt_count: {task.failed_attempt_count}")
+            print(f"last_failure_reason: {task.last_failure_reason}")
+            print(f"council_after_failed_attempts: {task.council_after_failed_attempts}")
+            print(f"council_required: {str(task.council_required).lower()}")
+            print(f"council_decision_required_before_continue: {str(task.council_decision_required_before_continue).lower()}")
             print(f"branch_matches_task: {str(payload['branch_matches_task']).lower()}")
+            if payload["branch_warning"]:
+                print(f"branch_warning: {payload['branch_warning']}")
         return 0 if council_result["ok"] else 1
     guard_result = evaluate_guard(allow_dirty=args.allow_dirty or args.execute, allow_any_root=False)
     branch = guard_result["branch"] or ""
     branch_matches_task = branch == task.branch_name
+    branch_warning = "" if branch_matches_task else f"branch mismatch: expected {task.branch_name}, found {branch or 'detached'}"
     prompt = build_prompt(assigned_agent, task)
     next_steps = [
         "Review the dry-run prompt before any execution.",
@@ -182,6 +208,11 @@ def main(argv: list[str] | None = None) -> int:
         branch=branch,
         remotes=_remote_map(),
         task=_task_payload(task),
+        failed_attempt_count=task.failed_attempt_count,
+        last_failure_reason=task.last_failure_reason,
+        council_after_failed_attempts=task.council_after_failed_attempts,
+        council_required=task.council_required,
+        council_decision_required_before_continue=task.council_decision_required_before_continue,
         assigned_agents=[
             "vega_orchestrator",
             "opencode_deepseek_flash",
@@ -194,6 +225,7 @@ def main(argv: list[str] | None = None) -> int:
         validation_commands=task.validation_commands,
         guard_result=guard_result,
         branch_matches_task=branch_matches_task,
+        branch_warning=branch_warning,
         dry_run_prompt=prompt,
         next_steps=next_steps,
     )
@@ -202,7 +234,13 @@ def main(argv: list[str] | None = None) -> int:
         "ok": bool(guard_result["ok"]),
         "task_id": task.task_id,
         "report_path": str(report_path),
+        "failed_attempt_count": task.failed_attempt_count,
+        "last_failure_reason": task.last_failure_reason,
+        "council_after_failed_attempts": task.council_after_failed_attempts,
+        "council_required": task.council_required,
+        "council_decision_required_before_continue": task.council_decision_required_before_continue,
         "branch_matches_task": branch_matches_task,
+        "branch_warning": branch_warning,
         "dry_run": not args.execute,
         "prompt": prompt,
         "next_steps": next_steps,
@@ -213,7 +251,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"task_id: {task.task_id}")
         print(f"report_path: {report_path}")
+        print(f"failed_attempt_count: {task.failed_attempt_count}")
+        print(f"last_failure_reason: {task.last_failure_reason}")
+        print(f"council_after_failed_attempts: {task.council_after_failed_attempts}")
+        print(f"council_required: {str(task.council_required).lower()}")
+        print(f"council_decision_required_before_continue: {str(task.council_decision_required_before_continue).lower()}")
         print(f"branch_matches_task: {str(branch_matches_task).lower()}")
+        if branch_warning:
+            print(f"branch_warning: {branch_warning}")
         print(prompt)
         print("")
         print("next_steps:")

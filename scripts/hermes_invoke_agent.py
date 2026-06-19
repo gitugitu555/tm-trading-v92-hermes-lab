@@ -49,6 +49,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--agent", required=True)
     parser.add_argument("--task-id")
     parser.add_argument("--task-file", default="docs/HERMES_TASK_QUEUE.md")
+    parser.add_argument("--council-mode", action="store_true")
+    parser.add_argument("--failure-reason", default="")
+    parser.add_argument("--requested-brief", default="")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -212,7 +215,7 @@ def build_prompt(
         lines.extend(
             [
                 "Council mode only. Do not edit files. Do not commit. Do not push.",
-                "No secrets: do not read secret config files, print environment variables, or expose API keys.",
+                "No-secrets warning: do not read secret config files, print environment variables, or expose API keys.",
             ]
         )
     if task is not None:
@@ -275,7 +278,13 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"Unknown agent: {args.agent}")
     task_path = Path(args.task_file)
     task = _find_task(task_path, args.task_id)
-    prompt = build_prompt(args.agent, task)
+    prompt = build_prompt(
+        args.agent,
+        task,
+        council_mode=args.council_mode,
+        failure_reason=args.failure_reason,
+        requested_brief=args.requested_brief,
+    )
     intended_command = _intended_command(args.agent)
     guard_result = evaluate_guard(allow_dirty=args.allow_dirty, allow_any_root=False)
     if args.execute and not guard_result["ok"]:

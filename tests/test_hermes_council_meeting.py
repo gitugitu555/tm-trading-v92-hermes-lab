@@ -22,6 +22,8 @@ def _task() -> TaskContext:
         failed_attempt_count=2,
         last_failure_reason="same test failed twice",
         council_after_failed_attempts=2,
+        council_required=False,
+        council_decision_required_before_continue=False,
     )
 
 
@@ -76,6 +78,12 @@ def test_generated_prompts_include_no_edit_commit_push_warning():
     assert prompts
     for prompt in prompts.values():
         assert "Do not edit files. Do not commit. Do not push." in prompt
+        assert "Council mode only." in prompt
+        assert "/home/tokio/tm-trading-v92-hermes-lab" in prompt
+        assert "/home/tokio/tm-trading-v92-core" in prompt
+        assert "No-secrets warning:" in prompt
+        assert "Never suggest pushing to upstream." in prompt
+        assert "No force-push" in prompt
 
 
 def test_unknown_task_id_fails_safely(monkeypatch, tmp_path):
@@ -114,11 +122,26 @@ def test_decision_labels_repo_boundary_and_safety_are_present(monkeypatch, tmp_p
     monkeypatch.setattr(council, "_git_value", lambda args: "commit")
     result = council.run_council("TASK-001", tmp_path / "queue.md", "human_requested", 2, tmp_path)
     text = Path(result["report_path"]).read_text()
-    assert "council_continue_current_task" in text
+    for label in [
+        "council_continue_current_task",
+        "council_retry_with_minimal_patch",
+        "council_stop_failed_task",
+        "council_rewrite_task_scope",
+        "council_create_new_preregistration",
+        "council_request_human_decision",
+        "council_retire_hypothesis",
+        "council_park_until_more_data",
+    ]:
+        assert label in text
     assert "/home/tokio/tm-trading-v92-hermes-lab" in text
     assert "push to upstream" in text
     assert "force-push" in text
     assert "allowed next action: review this report" in text
+    assert "Council mode only. Do not edit files. Do not commit. Do not push." in text
+    assert "human approval is required: true" in text
+    allowed_next_action_line = next(line for line in text.splitlines() if "allowed next action:" in line)
+    assert "upstream" not in allowed_next_action_line
+    assert "force-push" not in allowed_next_action_line
 
 
 def test_report_contains_all_required_sections(monkeypatch, tmp_path):

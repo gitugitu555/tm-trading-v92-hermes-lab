@@ -54,3 +54,4 @@ Default rule for all agents:
 
 - No direct commit or push unless the task explicitly allows it.
 - In council mode, no agent may edit files, commit, or push.
+- Council prompts must repeat the repo boundary, allowed files, forbidden files, current failure reason, and no-secrets warning.

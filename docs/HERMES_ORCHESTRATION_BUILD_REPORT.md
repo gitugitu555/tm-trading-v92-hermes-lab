@@ -85,6 +85,7 @@ Files created for council support:
 Dry-run council test result:
 
 - `python scripts/hermes_task_runner.py --task-id TASK-001-nonparametric-diagnostic --force-council --trigger-reason human_requested_test_council` creates a report under `reports/hermes_council/`.
+- Validation produced `reports/hermes_council/TASK-001-nonparametric-diagnostic_20260619T165129Z_council.md`.
 
 Council safety confirmations:
 

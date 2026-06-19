@@ -29,6 +29,7 @@ Council mode rules:
 - Council mode only. Do not edit files. Do not commit. Do not push.
 - No alpha approval, paper/live approval, new trading rule approval, or threshold tuning without preregistration.
 - Council output is a report only.
+- Council prompts must include the repo boundary, allowed files, forbidden files, current failure reason, and a no-secrets warning.
 
 Boundary reminders:
 
