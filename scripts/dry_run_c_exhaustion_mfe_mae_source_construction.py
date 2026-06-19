@@ -635,10 +635,16 @@ def build_report(*, trade_log: Path, bar_dir: Path, output_doc: Path | None = No
     lines.append("")
     lines.append("## What This Proves")
     lines.append("")
-    lines.append("- Row-level MFE/MAE source construction can be performed safely from existing trade intervals and bounded bars.")
-    lines.append("- Descriptive giveback labels can be assigned without changing strategy logic.")
-    lines.append("- The output can distinguish bad entries from giveback failures.")
-    lines.append("- The resulting diagnostics can show whether 2026 requires further investigation.")
+    if int(summary["rows_with_matched_bars"]) > 0:
+        lines.append("- Row-level MFE/MAE source construction can be performed safely from the matched trade intervals and bounded bars that were found.")
+        lines.append("- Descriptive giveback labels can be assigned without changing strategy logic.")
+        lines.append("- The output can distinguish bad entries from giveback failures for matched rows.")
+        lines.append("- The resulting diagnostics can show whether 2026 requires further investigation.")
+    else:
+        lines.append("- The current bounded bar source does not overlap the trade intervals closely enough to complete row-level MFE/MAE source construction.")
+        lines.append("- The audit confirms the source gap remains blocking for trade-row excursion diagnostics.")
+        lines.append("- No descriptive giveback labels were assigned because no matching bars were found.")
+        lines.append("- 2026 and the other years remain unresolved until source availability is remediated or separately approved.")
     lines.append("")
     lines.append("## What This Does Not Prove")
     lines.append("")
@@ -659,7 +665,9 @@ def build_report(*, trade_log: Path, bar_dir: Path, output_doc: Path | None = No
     lines.append("")
     lines.append("## Recommended Next Step")
     lines.append("")
-    if int((overall_losing["excursion_class"] == "giveback_loss").sum()) >= int((overall_losing["excursion_class"] == "bad_entry_loss").sum()):
+    if int(summary["rows_with_matched_bars"]) == 0:
+        lines.append("Recommend source-remediation preregistration, not reconstruction or optimization.")
+    elif int((overall_losing["excursion_class"] == "giveback_loss").sum()) >= int((overall_losing["excursion_class"] == "bad_entry_loss").sum()):
         lines.append("Recommend an exit-management diagnostic review document, not an optimization run.")
     else:
         lines.append("Recommend a conservative entry-filter diagnostic preregistration, not model-class expansion.")

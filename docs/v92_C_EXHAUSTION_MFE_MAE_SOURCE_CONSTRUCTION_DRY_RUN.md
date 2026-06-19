@@ -127,10 +127,10 @@ Kept/skipped giveback comparison is deferred until row-level predictions are sep
 
 ## What This Proves
 
-- Row-level MFE/MAE source construction can be performed safely from existing trade intervals and bounded bars.
-- Descriptive giveback labels can be assigned without changing strategy logic.
-- The output can distinguish bad entries from giveback failures.
-- The resulting diagnostics can show whether 2026 requires further investigation.
+- The current bounded bar source does not overlap the trade intervals closely enough to complete row-level MFE/MAE source construction.
+- The audit confirms the source gap remains blocking for trade-row excursion diagnostics.
+- No descriptive giveback labels were assigned because no matching bars were found.
+- 2026 and the other years remain unresolved until source availability is remediated or separately approved.
 
 ## What This Does Not Prove
 
@@ -151,7 +151,7 @@ Kept/skipped giveback comparison is deferred until row-level predictions are sep
 
 ## Recommended Next Step
 
-Recommend an exit-management diagnostic review document, not an optimization run.
+Recommend source-remediation preregistration, not reconstruction or optimization.
 
 ## Explicitly Not Approved
 
