@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from replays.c_exhaustion_replay import load_750btc_bars  # noqa: E402
+from replays.c_exhaustion_replay import load_750btc_bars, normalize_v92_bar_timestamps  # noqa: E402
 
 DEFAULT_OUTPUT = Path("docs/v92_C_EXHAUSTION_MFE_MAE_SOURCE_CONSTRUCTION_DRY_RUN.md")
 TIMESTAMP_TOLERANCE_MS = 1.0
@@ -37,6 +37,7 @@ OPTIONAL_TRADE_COLUMNS = ["year", "gross_return_bps", "holding_bars"]
 
 REQUIRED_BAR_COLUMNS = ["open_time", "close_time", "open", "high", "low", "close"]
 OPTIONAL_BAR_COLUMNS = ["bar_id", "volume", "volume_delta"]
+INTERVAL_CONVENTION = "half_open_open_time_convention"
 
 CLASS_LABELS = ["bad_entry_loss", "giveback_loss", "weak_positive_exit", "clean_winner", "unresolved"]
 
@@ -115,7 +116,11 @@ def _load_bars(bar_dir: Path) -> tuple[pd.DataFrame, list[Path]]:
     bar_files = sorted(bar_dir.glob("BTCUSDT_tier2_750btc_*.parquet"))
     if not bar_files:
         raise FileNotFoundError(f"No 750 BTC parquet shards found in {bar_dir}")
-    bars = load_750btc_bars(bar_dir).to_pandas()
+    bars = normalize_v92_bar_timestamps(load_750btc_bars(bar_dir)).to_pandas()
+    if "datetime_open" in bars.columns and "datetime_close" in bars.columns:
+        bars = bars.assign(open_time=bars["datetime_open"], close_time=bars["datetime_close"]).drop(
+            columns=["datetime_open", "datetime_close"]
+        )
     for column in ["open_time", "close_time"]:
         bars[column] = _parse_timestamp_series(bars[column])
     sort_cols = [column for column in ["open_time", "close_time", "bar_id"] if column in bars.columns]
@@ -135,6 +140,11 @@ def _final_return_basis(trades: pd.DataFrame) -> str:
     if "gross_return_bps" in trades.columns and trades["gross_return_bps"].notna().any():
         return "gross_return_bps"
     return "net_return_bps"
+
+
+def _interval_path(bars: pd.DataFrame, entry_time: pd.Timestamp, exit_time: pd.Timestamp) -> pd.DataFrame:
+    """Select the verified half-open open-time interval."""
+    return bars[(bars["open_time"] >= entry_time) & (bars["open_time"] < exit_time)].copy()
 
 
 def _side_basis(trades: pd.DataFrame) -> str:
@@ -249,7 +259,7 @@ def construct_excursion_table(trades: pd.DataFrame, bars: pd.DataFrame) -> pd.Da
                     matched_rows.append(result)
                     continue
 
-        path = bars.iloc[e_idx:x_idx].copy()
+        path = _interval_path(bars, entry_time, exit_time)
         if path.empty or path["high"].isna().all() or path["low"].isna().all():
             matched_rows.append(result)
             continue
@@ -462,12 +472,24 @@ def build_report(*, trade_log: Path, bar_dir: Path, output_doc: Path | None = No
     lines.append("- Alpha is not approved.")
     lines.append("- Full reconstruction remains blocked.")
     lines.append("")
+    lines.append("## Source-Alignment Patch Applied")
+    lines.append("")
+    lines.append("- source_alignment_patch_applied: `true`")
+    lines.append(f"- source_alignment_report: `docs/v92_C_EXHAUSTION_MFE_MAE_SOURCE_ALIGNMENT_DIAGNOSTIC.md`")
+    lines.append("- alignment decision: `safe_timestamp_open_time_convention_identified`")
+    lines.append(f"- primary convention: `{INTERVAL_CONVENTION}`")
+    lines.append("- interval rule: `bar.open_time >= entry_time and bar.open_time < exit_time`")
+    lines.append("- no alternative exits searched")
+    lines.append("- no convention selected by performance")
+    lines.append("- no source alignment optimization")
+    lines.append("")
     lines.append("## Pre-Registered Protocol Applied")
     lines.append("")
     lines.append(f"- source preregistration file path: `docs/v92_C_EXHAUSTION_MFE_MAE_SOURCE_PREREGISTRATION.md`")
     lines.append("- existing trade intervals only")
     lines.append("- bounded 750btc bars only")
     lines.append(f"- side_basis: `{summary['side_basis']}`")
+    lines.append(f"- interval_convention: `{INTERVAL_CONVENTION}`")
     lines.append("- no alternative exits searched")
     lines.append("- classification framework: `bad_entry_loss`, `giveback_loss`, `weak_positive_exit`, `clean_winner`, `unresolved`")
     lines.append("- weak_positive_exit threshold fixed at 50% giveback of MFE")
@@ -485,6 +507,7 @@ def build_report(*, trade_log: Path, bar_dir: Path, output_doc: Path | None = No
     lines.append(f"- year_max: `{summary['year_max']}`")
     lines.append(f"- side_basis: `{summary['side_basis']}`")
     lines.append(f"- final_return_basis: `{summary['final_return_basis']}`")
+    lines.append(f"- interval_convention: `{INTERVAL_CONVENTION}`")
     lines.append("")
     lines.append("## Classification Counts")
     lines.append("")
@@ -636,7 +659,7 @@ def build_report(*, trade_log: Path, bar_dir: Path, output_doc: Path | None = No
     lines.append("## What This Proves")
     lines.append("")
     if int(summary["rows_with_matched_bars"]) > 0:
-        lines.append("- Row-level MFE/MAE source construction can be performed safely from the matched trade intervals and bounded bars that were found.")
+        lines.append(f"- Row-level MFE/MAE source construction can be performed safely from the matched trade intervals and bounded bars that were found under `{INTERVAL_CONVENTION}`.")
         lines.append("- Descriptive giveback labels can be assigned without changing strategy logic.")
         lines.append("- The output can distinguish bad entries from giveback failures for matched rows.")
         lines.append("- The resulting diagnostics can show whether 2026 requires further investigation.")

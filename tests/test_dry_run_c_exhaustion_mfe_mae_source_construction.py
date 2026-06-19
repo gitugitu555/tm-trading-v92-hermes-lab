@@ -101,6 +101,61 @@ def _build_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     return trade_log, bar_dir, tmp_path / "report.md"
 
 
+def _half_open_fixture() -> tuple[pd.DataFrame, pd.DataFrame]:
+    bars = pd.DataFrame(
+        [
+            {
+                "bar_id": 0,
+                "open_time": pd.Timestamp("2025-01-01T00:00:00"),
+                "close_time": pd.Timestamp("2025-01-01T01:00:00"),
+                "open": 100.0,
+                "high": 120.0,
+                "low": 99.0,
+                "close": 110.0,
+                "volume": 10.0,
+            },
+            {
+                "bar_id": 1,
+                "open_time": pd.Timestamp("2025-01-01T01:00:00"),
+                "close_time": pd.Timestamp("2025-01-01T02:00:00"),
+                "open": 200.0,
+                "high": 999.0,
+                "low": 50.0,
+                "close": 150.0,
+                "volume": 11.0,
+            },
+            {
+                "bar_id": 2,
+                "open_time": pd.Timestamp("2025-01-01T02:00:00"),
+                "close_time": pd.Timestamp("2025-01-01T03:00:00"),
+                "open": 300.0,
+                "high": 310.0,
+                "low": 290.0,
+                "close": 305.0,
+                "volume": 12.0,
+            },
+        ]
+    )
+    trades = pd.DataFrame(
+        [
+            {
+                "signal_index": 0,
+                "entry_index": 0,
+                "exit_index": 1,
+                "signal_time": pd.Timestamp("2025-01-01T01:00:00"),
+                "entry_time": pd.Timestamp("2025-01-01T00:00:00"),
+                "exit_time": pd.Timestamp("2025-01-01T01:00:00"),
+                "entry_price": 100.0,
+                "exit_price": 101.0,
+                "gross_return_bps": 100.0,
+                "net_return_bps": 95.0,
+                "year": 2025,
+            }
+        ]
+    )
+    return trades, bars
+
+
 def test_computes_long_side_mfe_mae_and_all_classifications(tmp_path: Path):
     trades = _trade_frame()
     bars = _bars_frame()
@@ -161,6 +216,18 @@ def test_does_not_search_alternative_exits(tmp_path: Path):
     assert matched["exit_index"].tolist() == [4, 8, 12, 16]
 
 
+def test_half_open_interval_includes_entry_bar_and_excludes_exit_bar(tmp_path: Path):
+    trades, bars = _half_open_fixture()
+    diagnostics = src.construct_excursion_table(trades, bars)
+    row = diagnostics.iloc[0]
+    assert row["row_status"] == "matched"
+    assert row["intra_trade_bar_count"] == 1
+    assert row["max_favorable_price"] == 120.0
+    assert row["max_adverse_price"] == 99.0
+    assert row["mfe_bps"] == pytest.approx((120.0 / 100.0 - 1.0) * 10_000.0)
+    assert row["exit_time"] == pd.Timestamp("2025-01-01T01:00:00")
+
+
 def test_does_not_write_row_level_artifacts_and_report_has_safety_statements(tmp_path: Path):
     trade_log, bar_dir, output_doc = _build_repo(tmp_path)
     report, summary = src.build_report(trade_log=trade_log, bar_dir=bar_dir, output_doc=output_doc)
@@ -173,6 +240,8 @@ def test_does_not_write_row_level_artifacts_and_report_has_safety_statements(tmp
     assert "No paper/live trading is approved." in report
     assert "No production approval is given." in report
     assert "Alpha is not approved." in report
+    assert "source_alignment_patch_applied" in report
+    assert "half_open_open_time_convention" in report
     assert summary["decision"] in {
         "bounded_mfe_mae_source_construction_pass",
         "bounded_mfe_mae_source_construction_partial",
