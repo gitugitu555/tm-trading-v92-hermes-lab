@@ -1,0 +1,19 @@
+name: manifest-check
+on:
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify Manifest and Ledger
+        run: python scripts/verify_run_manifest.py --base origin/master --head HEAD
