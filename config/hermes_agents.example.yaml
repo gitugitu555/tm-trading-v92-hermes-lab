@@ -1,0 +1,44 @@
+agents:
+  vega_orchestrator:
+    command: hermes
+    profile: vega
+    role: orchestrator
+    can_commit: false
+    can_push: false
+
+  opencode_deepseek_flash:
+    command: opencode
+    model_hint: deepseek-v4-flash-free
+    role: implementation
+    can_commit: false
+    can_push: false
+
+  kilo_nex2_review:
+    command: kilo
+    alternate_command: kilocode
+    model_hint: nex-2-pro-free
+    role: review_verification
+    can_commit: false
+    can_push: false
+
+  vibe_strategy:
+    command: vibe
+    role: deep_strategy_discussion
+    can_commit: false
+    can_push: false
+
+  zcode_glm52_research:
+    command: zcode
+    model_hint: glm-5.2
+    role: large_context_research
+    can_commit: false
+    can_push: false
+
+repo_policy:
+  active_repo: /home/tokio/tm-trading-v92-hermes-lab
+  checkpoint_repo: /home/tokio/tm-trading-v92-core
+  push_remote: origin
+  forbidden_remote: upstream
+  force_push_allowed: false
+  branch_protection_changes_allowed: false
+  workflow_changes_allowed: false
