@@ -37,6 +37,11 @@ class TaskContext:
     allowed_files: list[str]
     forbidden_files: list[str]
     validation_commands: list[str]
+    failed_attempt_count: int = 0
+    last_failure_reason: str = ""
+    council_after_failed_attempts: int = 2
+    council_required: bool = False
+    council_decision_required_before_continue: bool = False
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -57,24 +62,34 @@ def _load_task_queue(task_file: Path) -> list[TaskContext]:
     current: dict[str, object] | None = None
     section: str | None = None
     buffer: list[str] = []
+
+    def emit_task(payload: dict[str, object], context_lines: list[str]) -> TaskContext:
+        payload["context"] = "\n".join(context_lines).strip()
+        return TaskContext(
+            task_id=str(payload["task_id"]),
+            title=str(payload["title"]),
+            status=str(payload["status"]),
+            branch_name=str(payload["branch_name"]),
+            objective=str(payload["objective"]),
+            context=str(payload["context"]),
+            allowed_files=list(payload["allowed_files"]),
+            forbidden_files=list(payload["forbidden_files"]),
+            validation_commands=list(payload["validation_commands"]),
+            failed_attempt_count=int(payload["failed_attempt_count"] or 0),
+            last_failure_reason=str(payload["last_failure_reason"]),
+            council_after_failed_attempts=int(payload["council_after_failed_attempts"] or 2),
+            council_required=bool(payload["council_required"]),
+            council_decision_required_before_continue=bool(payload["council_decision_required_before_continue"]),
+        )
+
+    def parse_bool(value: str) -> bool:
+        return value.strip().lower() in {"true", "yes", "1"}
+
     for raw_line in task_file.read_text().splitlines():
         line = raw_line.rstrip()
         if line.startswith("## TASK-"):
             if current is not None:
-                current["context"] = "\n".join(buffer).strip()
-                tasks.append(
-                    TaskContext(
-                        task_id=str(current["task_id"]),
-                        title=str(current["title"]),
-                        status=str(current["status"]),
-                        branch_name=str(current["branch_name"]),
-                        objective=str(current["objective"]),
-                        context=str(current["context"]),
-                        allowed_files=list(current["allowed_files"]),
-                        forbidden_files=list(current["forbidden_files"]),
-                        validation_commands=list(current["validation_commands"]),
-                    )
-                )
+                tasks.append(emit_task(current, buffer))
             current = {
                 "task_id": line.removeprefix("## ").strip(),
                 "title": "",
@@ -85,6 +100,11 @@ def _load_task_queue(task_file: Path) -> list[TaskContext]:
                 "allowed_files": [],
                 "forbidden_files": [],
                 "validation_commands": [],
+                "failed_attempt_count": 0,
+                "last_failure_reason": "",
+                "council_after_failed_attempts": 2,
+                "council_required": False,
+                "council_decision_required_before_continue": False,
             }
             section = None
             buffer = []
@@ -103,6 +123,27 @@ def _load_task_queue(task_file: Path) -> list[TaskContext]:
             continue
         if stripped.startswith("Objective:"):
             current["objective"] = stripped.split("Objective:", 1)[1].strip()
+            section = None
+            continue
+        if stripped.startswith("failed_attempt_count:"):
+            current["failed_attempt_count"] = int(stripped.split(":", 1)[1].strip() or 0)
+            section = None
+            continue
+        if stripped.startswith("last_failure_reason:"):
+            current["last_failure_reason"] = stripped.split(":", 1)[1].strip()
+            section = None
+            continue
+        if stripped.startswith("council_after_failed_attempts:"):
+            current["council_after_failed_attempts"] = int(stripped.split(":", 1)[1].strip() or 2)
+            section = None
+            continue
+        if stripped.startswith("council_required:"):
+            current["council_required"] = parse_bool(stripped.split(":", 1)[1])
+            section = None
+            continue
+        if stripped.startswith("council_decision_required_before_continue:"):
+            current["council_decision_required_before_continue"] = parse_bool(stripped.split(":", 1)[1])
+            section = None
             continue
         if stripped == "Context:":
             section = "context"
@@ -117,6 +158,9 @@ def _load_task_queue(task_file: Path) -> list[TaskContext]:
         if stripped == "Validation commands:":
             section = "validation_commands"
             continue
+        if stripped.endswith(":"):
+            section = None
+            continue
         if section == "context" and stripped:
             buffer.append(raw_line)
             continue
@@ -126,20 +170,7 @@ def _load_task_queue(task_file: Path) -> list[TaskContext]:
                 current[section].append(value)
             continue
     if current is not None:
-        current["context"] = "\n".join(buffer).strip()
-        tasks.append(
-            TaskContext(
-                task_id=str(current["task_id"]),
-                title=str(current["title"]),
-                status=str(current["status"]),
-                branch_name=str(current["branch_name"]),
-                objective=str(current["objective"]),
-                context=str(current["context"]),
-                allowed_files=list(current["allowed_files"]),
-                forbidden_files=list(current["forbidden_files"]),
-                validation_commands=list(current["validation_commands"]),
-            )
-        )
+        tasks.append(emit_task(current, buffer))
     return tasks
 
 
@@ -156,7 +187,14 @@ def _find_task(task_file: Path, task_id: str | None) -> TaskContext | None:
     return None
 
 
-def build_prompt(agent: str, task: TaskContext | None, task_file: Path | None = None) -> str:
+def build_prompt(
+    agent: str,
+    task: TaskContext | None,
+    task_file: Path | None = None,
+    council_mode: bool = False,
+    failure_reason: str = "",
+    requested_brief: str = "",
+) -> str:
     if agent not in ALLOWED_AGENTS:
         raise ValueError(f"Unknown agent: {agent}")
     command = ALLOWED_AGENTS[agent]
@@ -170,6 +208,13 @@ def build_prompt(agent: str, task: TaskContext | None, task_file: Path | None = 
         "Forbidden remote: upstream",
         "No force-push, no history rewrite, no workflow changes, no branch protection changes, no secrets.",
     ]
+    if council_mode:
+        lines.extend(
+            [
+                "Council mode only. Do not edit files. Do not commit. Do not push.",
+                "No secrets: do not read secret config files, print environment variables, or expose API keys.",
+            ]
+        )
     if task is not None:
         lines.extend(
             [
@@ -181,6 +226,8 @@ def build_prompt(agent: str, task: TaskContext | None, task_file: Path | None = 
                 task.objective,
                 "Context:",
                 task.context or "n/a",
+                "Current failure reason:",
+                failure_reason or task.last_failure_reason or "n/a",
                 "Allowed files:",
             ]
         )
@@ -189,6 +236,14 @@ def build_prompt(agent: str, task: TaskContext | None, task_file: Path | None = 
         lines.extend(f"- {value}" for value in task.forbidden_files)
         lines.append("Validation commands:")
         lines.extend(f"- {value}" for value in task.validation_commands)
+        if requested_brief:
+            lines.extend(
+                [
+                    "Requested role-specific brief:",
+                    requested_brief,
+                    "Return fields: diagnosis, risks, recommended next action, confidence, recommendation.",
+                ]
+            )
     else:
         lines.append("No task context was loaded.")
     lines.extend(

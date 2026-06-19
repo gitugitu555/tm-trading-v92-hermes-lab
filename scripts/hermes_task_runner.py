@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.hermes_council_meeting import run_council  # noqa: E402
 from scripts.hermes_invoke_agent import ALLOWED_AGENTS, TaskContext, _find_task, build_prompt  # noqa: E402
 from scripts.hermes_lab_guard import EXPECTED_REPO_ROOT, evaluate_guard  # noqa: E402
 
@@ -44,6 +45,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--agent")
+    parser.add_argument("--force-council", action="store_true")
+    parser.add_argument("--trigger-reason", default="")
     parser.add_argument("--json", action="store_true")
     return parser.parse_args(argv)
 
@@ -117,6 +120,15 @@ def _task_payload(task: TaskContext | None) -> dict[str, object]:
     return asdict(task)
 
 
+def _council_required(task: TaskContext, force_council: bool) -> bool:
+    return bool(
+        force_council
+        or task.council_required
+        or task.council_decision_required_before_continue
+        or task.failed_attempt_count >= task.council_after_failed_attempts
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     task = _load_task(args.task_id)
@@ -125,6 +137,36 @@ def main(argv: list[str] | None = None) -> int:
     assigned_agent = args.agent or "vega_orchestrator"
     if assigned_agent not in ALLOWED_AGENTS:
         raise SystemExit(f"Unknown agent: {assigned_agent}")
+    if _council_required(task, args.force_council):
+        trigger_reason = args.trigger_reason or task.last_failure_reason or "council_required"
+        council_result = run_council(
+            task_id=task.task_id,
+            task_file=TASK_QUEUE_PATH,
+            trigger_reason=trigger_reason,
+            failed_attempt_count=task.failed_attempt_count,
+            output_dir=Path("reports/hermes_council"),
+            execute_agents=False,
+        )
+        payload = {
+            "ok": bool(council_result["ok"]),
+            "task_id": task.task_id,
+            "council_triggered": True,
+            "council_report_path": council_result["report_path"],
+            "trigger_reason": trigger_reason,
+            "failed_attempt_count": task.failed_attempt_count,
+            "branch_matches_task": (council_result["guard_result"].get("branch") or "") == task.branch_name,
+            "dry_run": not args.execute,
+            "guard_result": council_result["guard_result"],
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"task_id: {task.task_id}")
+            print("council_triggered: true")
+            print(f"council_report_path: {council_result['report_path']}")
+            print(f"trigger_reason: {trigger_reason}")
+            print(f"branch_matches_task: {str(payload['branch_matches_task']).lower()}")
+        return 0 if council_result["ok"] else 1
     guard_result = evaluate_guard(allow_dirty=args.allow_dirty or args.execute, allow_any_root=False)
     branch = guard_result["branch"] or ""
     branch_matches_task = branch == task.branch_name

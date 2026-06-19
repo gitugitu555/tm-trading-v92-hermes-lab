@@ -84,6 +84,137 @@ def test_dry_run_does_not_commit_or_push(monkeypatch, tmp_path, capsys):
     assert '"dry_run": true' in output
 
 
+def test_failed_attempt_count_below_threshold_continues_normal_dry_run(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "_load_task", lambda task_id: TaskContext(
+        task_id="TASK-001",
+        title="Title",
+        status="pending",
+        branch_name="feature/test",
+        objective="Objective",
+        context="Context",
+        allowed_files=["scripts/example.py"],
+        forbidden_files=["upstream/**"],
+        validation_commands=["pytest -q"],
+        failed_attempt_count=1,
+        council_after_failed_attempts=2,
+    ))
+    monkeypatch.setattr(runner, "evaluate_guard", lambda allow_dirty, allow_any_root: {
+        "ok": True,
+        "repo_root": str(tmp_path),
+        "branch": "feature/test",
+        "origin_url": "origin",
+        "upstream_url": "upstream",
+        "dirty": False,
+        "suspicious_files_present": [],
+        "failures": [],
+    })
+    monkeypatch.setattr(runner, "_remote_map", lambda: {"origin": "origin", "upstream": "upstream"})
+    monkeypatch.setattr(runner, "_write_report", lambda task_id, report: tmp_path / "reports" / "hermes_runs" / f"{task_id}.md")
+    runner.main(["--task-id", "TASK-001", "--json"])
+    output = capsys.readouterr().out
+    assert '"council_triggered"' not in output
+    assert '"dry_run": true' in output
+
+
+def test_failed_attempt_count_at_threshold_triggers_council(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(runner, "_load_task", lambda task_id: TaskContext(
+        task_id="TASK-001",
+        title="Title",
+        status="pending",
+        branch_name="feature/test",
+        objective="Objective",
+        context="Context",
+        allowed_files=[],
+        forbidden_files=[],
+        validation_commands=[],
+        failed_attempt_count=2,
+        council_after_failed_attempts=2,
+    ))
+    monkeypatch.setattr(runner, "run_council", lambda **kwargs: {
+        "ok": True,
+        "report_path": "reports/hermes_council/TASK-001_council.md",
+        "guard_result": {"branch": "feature/test"},
+    })
+    runner.main(["--task-id", "TASK-001", "--json"])
+    assert '"council_triggered": true' in capsys.readouterr().out
+
+
+def test_force_council_triggers_council(monkeypatch, capsys):
+    monkeypatch.setattr(runner, "_load_task", lambda task_id: TaskContext(
+        task_id="TASK-001",
+        title="Title",
+        status="pending",
+        branch_name="feature/test",
+        objective="Objective",
+        context="Context",
+        allowed_files=[],
+        forbidden_files=[],
+        validation_commands=[],
+    ))
+    monkeypatch.setattr(runner, "run_council", lambda **kwargs: {
+        "ok": True,
+        "report_path": "reports/hermes_council/TASK-001_council.md",
+        "guard_result": {"branch": "feature/test"},
+    })
+    runner.main(["--task-id", "TASK-001", "--force-council", "--trigger-reason", "human_requested", "--json"])
+    output = capsys.readouterr().out
+    assert '"council_triggered": true' in output
+    assert "reports/hermes_council/TASK-001_council.md" in output
+
+
+def test_council_required_true_triggers_council(monkeypatch, capsys):
+    monkeypatch.setattr(runner, "_load_task", lambda task_id: TaskContext(
+        task_id="TASK-001",
+        title="Title",
+        status="pending",
+        branch_name="feature/test",
+        objective="Objective",
+        context="Context",
+        allowed_files=[],
+        forbidden_files=[],
+        validation_commands=[],
+        council_required=True,
+    ))
+    monkeypatch.setattr(runner, "run_council", lambda **kwargs: {
+        "ok": True,
+        "report_path": "reports/hermes_council/TASK-001_council.md",
+        "guard_result": {"branch": "feature/test"},
+    })
+    runner.main(["--task-id", "TASK-001", "--json"])
+    assert '"council_triggered": true' in capsys.readouterr().out
+
+
+def test_branch_mismatch_remains_warning_field_in_dry_run(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "_load_task", lambda task_id: TaskContext(
+        task_id="TASK-001",
+        title="Title",
+        status="pending",
+        branch_name="expected/task",
+        objective="Objective",
+        context="Context",
+        allowed_files=[],
+        forbidden_files=[],
+        validation_commands=[],
+    ))
+    monkeypatch.setattr(runner, "evaluate_guard", lambda allow_dirty, allow_any_root: {
+        "ok": True,
+        "repo_root": str(tmp_path),
+        "branch": "actual/infra",
+        "origin_url": "origin",
+        "upstream_url": "upstream",
+        "dirty": False,
+        "suspicious_files_present": [],
+        "failures": [],
+    })
+    monkeypatch.setattr(runner, "_remote_map", lambda: {"origin": "origin", "upstream": "upstream"})
+    monkeypatch.setattr(runner, "_write_report", lambda task_id, report: tmp_path / "report.md")
+    runner.main(["--task-id", "TASK-001", "--json"])
+    output = capsys.readouterr().out
+    assert '"branch_matches_task": false' in output
+
+
 def test_generated_prompt_includes_repo_boundary(monkeypatch):
     task = TaskContext(
         task_id="TASK-001",

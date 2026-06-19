@@ -57,6 +57,50 @@ Unavailable commands:
 - In this workspace, the task branch differs from the current branch, so the run report records `branch_matches_task: false` instead of forcing a branch switch.
 - Dry-run output includes the repo boundary, allowed files, forbidden files, validation commands, and a self-contained worker prompt.
 
+## AI Council Meeting Protocol
+
+The AI Council Meeting Protocol exists so Vega does not blindly continue through repeated failures, ambiguous metrics, forbidden-file risk, or unclear strategy direction. In council mode, agents provide report-only briefs and may not edit files, commit, or push.
+
+Trigger rules include:
+
+- `failed_attempt_count >= council_after_failed_attempts`
+- Same test fails twice after attempted fixes.
+- Full pytest fails after a task claimed success.
+- Task becomes ambiguous.
+- Requested change would touch forbidden files.
+- Output metrics are inconclusive.
+- Win rate improves while expectancy or payoff worsens.
+- Threshold tuning is proposed without preregistration.
+- Strategy, replay, OFI, or workflow scope drift is proposed.
+- User explicitly requests council, review, or meeting.
+- Vega cannot choose a safe next action.
+
+Files created for council support:
+
+- `docs/HERMES_COUNCIL_PROTOCOL.md`
+- `scripts/hermes_council_meeting.py`
+- `tests/test_hermes_council_meeting.py`
+- `reports/hermes_council/.gitkeep`
+
+Dry-run council test result:
+
+- `python scripts/hermes_task_runner.py --task-id TASK-001-nonparametric-diagnostic --force-council --trigger-reason human_requested_test_council` creates a report under `reports/hermes_council/`.
+
+Council safety confirmations:
+
+- No files are edited by agents during council mode.
+- No commit happens during council mode.
+- No push happens during council mode.
+
+Next usage command:
+
+```bash
+python scripts/hermes_task_runner.py \
+  --task-id TASK-001-nonparametric-diagnostic \
+  --force-council \
+  --trigger-reason human_requested
+```
+
 ## How Vega Should Use It
 
 - Start every orchestration cycle with `scripts/hermes_lab_guard.py`.

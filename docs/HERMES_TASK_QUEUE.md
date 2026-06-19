@@ -18,6 +18,16 @@ Assigned agent:
 
 Objective: Implement the preregistered nonparametric failure attribution diagnostic without modifying strategy, replay, diagnostic, or OFI logic outside the permitted scope.
 
+failed_attempt_count: 0
+
+last_failure_reason:
+
+council_after_failed_attempts: 2
+
+council_required: false
+
+council_decision_required_before_continue: false
+
 Context:
 
 This task is intentionally narrow. It is a lab-only diagnostic effort that must respect the repo boundary and cannot touch the checkpoint repo or any forbidden files.
@@ -56,3 +66,11 @@ Decision labels:
 - recent_failure_mixed_or_inconclusive
 
 Final report required: true
+
+Council trigger examples:
+
+- If diagnostic implementation fails tests twice, call council.
+- If diagnostic output is mixed/inconclusive, call council before proposing next experiment.
+- If any agent proposes tuning Param Set 001 nearby variants, call council.
+- If any change touches strategy/replay/OFI/workflow files, call council and stop implementation.
+- If win rate improves but expectancy/payoff worsens, call council.
