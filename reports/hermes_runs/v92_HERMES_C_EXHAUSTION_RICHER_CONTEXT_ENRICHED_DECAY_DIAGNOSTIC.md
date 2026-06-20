@@ -17,24 +17,24 @@
 
 | field | status | notes |
 | --- | --- | --- |
-| trade entry timestamp | available | entry_time |
-| year / period label | available | year -> historical/recent split |
-| trade_density | available | trade_count from 750btc bars |
+| trade entry timestamp | timestamp | entry_time |
+| year / period label | timestamp-derived | year -> historical/recent split |
+| trade_density | available | trade_count from signal_index bar |
 | local_trend_range_state | available | native range-trend state carried forward |
-| weekday_weekend_effect | available | weekday/weekend flag from entry_time |
-| bar size | available | static replay config: 750 |
-| horizon | available | static replay config: 36 bars |
-| side | available | long-only assumed; side column absent |
+| weekday_weekend_effect | available | weekday/weekend flag from signal_index bar |
+| bar size | static | static replay config: 750 |
+| horizon | static | static replay config: 36 bars |
+| side | static | long-only assumed; side column absent |
 | original return bps | available | gross_return_bps |
 | gross return bps | available | gross_return_bps |
 | net return bps | available | net_return_bps |
 | MFE / MAE | available | computed from trade log and bounded bars |
-| exit class | available | excursion_class / exit_class |
-| signal state | available | c_signal / excursion-class context |
+| exit class | blocked_insufficient_coverage | excursion_class / exit_class |
+| signal state | blocked_insufficient_coverage | c_signal / excursion-class context |
 | regime_label | available | EXHAUSTED regime dominates |
 | volatility_label | available | 24-bar realized-vol bucket |
 | range_trend_label | available | 24-bar trend / failed-reversal / range label |
-| distance_from_recent_high_low | available | normalized position inside prior 24-bar range |
+| distance_from_recent_high_low | available_partial | normalized position inside prior 24-bar range |
 | distance_from_vwap | available | close-vwap basis points |
 | prior_bar_return_path | available | pre-signal 24-bar return bucket |
 | cvd_delta | available | volume_delta sign bucket |
@@ -44,10 +44,10 @@
 | row-level export | blocked | not written |
 | future-return-derived eligibility labels | blocked | post-hoc only |
 
-- fields available: `trade entry timestamp, year / period label, trade_density, local_trend_range_state, weekday_weekend_effect, bar size, horizon, side, original return bps, gross return bps, net return bps, MFE / MAE, exit class, signal state, regime_label, volatility_label, range_trend_label, distance_from_recent_high_low, distance_from_vwap, prior_bar_return_path, cvd_delta, session_time_of_day_labels`
-- fields missing: `none among the safe field set`
-- fields used: `trade entry timestamp, year / period label, bar size, horizon, side, trade_density, local_trend_range_state, weekday_weekend_effect, original return bps, gross return bps, net return bps, MFE / MAE, exit class, signal state, regime_label, volatility_label, range_trend_label, distance_from_recent_high_low, distance_from_vwap, prior_bar_return_path, cvd_delta, session_time_of_day_labels`
-- fields blocked: `raw L2, OFI, row-level export, future-return-derived eligibility labels, raw L2, OFI, row-level export, future-return-derived eligibility labels`
+- fields available: `trade_density, local_trend_range_state, weekday_weekend_effect, original return bps, gross return bps, net return bps, MFE / MAE, regime_label, volatility_label, range_trend_label, distance_from_recent_high_low, distance_from_vwap, prior_bar_return_path, cvd_delta, session_time_of_day_labels`
+- fields missing: `exit class, signal state`
+- fields used: `trade_density, local_trend_range_state, weekday_weekend_effect, original return bps, gross return bps, net return bps, MFE / MAE, regime_label, volatility_label, range_trend_label, distance_from_recent_high_low, distance_from_vwap, prior_bar_return_path, cvd_delta, session_time_of_day_labels`
+- fields blocked: `exit class, signal state, raw L2, OFI, row-level export, future-return-derived eligibility labels`
 
 ## Baseline Period Comparison
 
@@ -74,10 +74,10 @@
 
 | bucket | historical_count | recent_count | historical_expectancy_bps | recent_expectancy_bps | historical_win_rate | recent_win_rate | historical_positive_tail_frequency | recent_positive_tail_frequency | historical_large_loss_frequency | recent_large_loss_frequency | degradation_bps | historical_average_winner_bps | recent_average_winner_bps | historical_average_loser_bps | recent_average_loser_bps | historical_cost_drag_bps | recent_cost_drag_bps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| low | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| medium | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| high | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| n/a | 285 | 25 | 57.402 | -108.743 | 0.586 | 0.360 | 0.211 | 0.000 | 0.105 | 0.400 | -166.144 | 197.755 | 93.598 | -141.233 | -222.559 | 12.000 | 12.000 |
+| low | 102 | 0 | 74.956 | n/a | 0.559 | n/a | 0.206 | n/a | 0.098 | n/a | n/a | 229.004 | n/a | -120.172 | n/a | 12.000 | n/a |
+| medium | 105 | 1 | 31.248 | 190.709 | 0.571 | 1.000 | 0.200 | 0.000 | 0.124 | 0.000 | 159.462 | 177.180 | 190.709 | -163.328 | n/a | 12.000 | 12.000 |
+| high | 78 | 24 | 69.654 | -121.220 | 0.641 | 0.333 | 0.231 | 0.000 | 0.090 | 0.417 | -190.874 | 186.821 | 81.459 | -139.572 | -222.559 | 12.000 | 12.000 |
+| n/a | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 
 ### distance_from_vwap
 
@@ -94,10 +94,10 @@
 
 | bucket | historical_count | recent_count | historical_expectancy_bps | recent_expectancy_bps | historical_win_rate | recent_win_rate | historical_positive_tail_frequency | recent_positive_tail_frequency | historical_large_loss_frequency | recent_large_loss_frequency | degradation_bps | historical_average_winner_bps | recent_average_winner_bps | historical_average_loser_bps | recent_average_loser_bps | historical_cost_drag_bps | recent_cost_drag_bps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| near recent low | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
+| near recent low | 285 | 25 | 57.402 | -108.743 | 0.586 | 0.360 | 0.211 | 0.000 | 0.105 | 0.400 | -166.144 | 197.755 | 93.598 | -141.233 | -222.559 | 12.000 | 12.000 |
 | middle range | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | near recent high | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| n/a | 285 | 25 | 57.402 | -108.743 | 0.586 | 0.360 | 0.211 | 0.000 | 0.105 | 0.400 | -166.144 | 197.755 | 93.598 | -141.233 | -222.559 | 12.000 | 12.000 |
+| n/a | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 
 ### prior_bar_return_path
 
@@ -131,9 +131,9 @@
 
 | bucket | historical_count | recent_count | historical_expectancy_bps | recent_expectancy_bps | historical_win_rate | recent_win_rate | historical_positive_tail_frequency | recent_positive_tail_frequency | historical_large_loss_frequency | recent_large_loss_frequency | degradation_bps | historical_average_winner_bps | recent_average_winner_bps | historical_average_loser_bps | recent_average_loser_bps | historical_cost_drag_bps | recent_cost_drag_bps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| weekday | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
+| weekday | 285 | 25 | 57.402 | -108.743 | 0.586 | 0.360 | 0.211 | 0.000 | 0.105 | 0.400 | -166.144 | 197.755 | 93.598 | -141.233 | -222.559 | 12.000 | 12.000 |
 | weekend | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
-| unknown | 285 | 25 | 57.402 | -108.743 | 0.586 | 0.360 | 0.211 | 0.000 | 0.105 | 0.400 | -166.144 | 197.755 | 93.598 | -141.233 | -222.559 | 12.000 | 12.000 |
+| unknown | 0 | 0 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 
 ### local_trend_range_state
 
@@ -185,32 +185,47 @@
 
 | interaction | historical_count | recent_count | historical_expectancy_bps | recent_expectancy_bps | historical_win_rate | recent_win_rate | positive_tail_frequency_change | large_loss_frequency_change | degradation_bps | sample_sufficient | historical_average_winner_bps | recent_average_winner_bps | historical_average_loser_bps | recent_average_loser_bps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| n/a × mixed | 47 | 7 | -146.329 | -282.847 | 0.085 | 0.000 | -0.021 | 0.395 | -136.518 | 1 | 95.717 | n/a | -168.845 | -282.847 |
-| n/a × range | 102 | 9 | 177.681 | 1.903 | 0.794 | 0.556 | -0.373 | 0.203 | -175.777 | 1 | 243.704 | 118.812 | -76.981 | -144.233 |
-| n/a × range_expansion | 136 | 9 | 37.600 | -83.974 | 0.603 | 0.444 | -0.154 | 0.238 | -121.574 | 1 | 157.343 | 62.081 | -144.233 | -200.818 |
+| high × mixed | 8 | 7 | -178.681 | -282.847 | 0.125 | 0.000 | 0.000 | 0.339 | -104.165 | 1 | 14.778 | n/a | -206.318 | -282.847 |
+| high × range | 32 | 8 | 130.624 | -21.698 | 0.781 | 0.500 | -0.344 | 0.219 | -152.321 | 1 | 193.936 | 100.838 | -95.492 | -144.233 |
+| high × range_expansion | 38 | 9 | 70.593 | -83.974 | 0.632 | 0.444 | -0.184 | 0.254 | -154.567 | 1 | 186.577 | 62.081 | -128.238 | -200.818 |
+| low × mixed | 17 | 0 | -131.857 | n/a | 0.059 | n/a | n/a | n/a | n/a | 0 | 103.465 | n/a | -146.564 | n/a |
+| low × range | 36 | 0 | 242.669 | n/a | 0.806 | n/a | n/a | n/a | n/a | 0 | 324.457 | n/a | -96.164 | n/a |
+| low × range_expansion | 49 | 0 | 23.489 | n/a | 0.551 | n/a | n/a | n/a | n/a | 0 | 131.130 | n/a | -108.617 | n/a |
+| medium × mixed | 22 | 0 | -145.748 | n/a | 0.091 | n/a | n/a | n/a | n/a | 0 | 132.313 | n/a | -173.554 | n/a |
+| medium × range | 34 | 1 | 153.158 | 190.709 | 0.794 | 1.000 | -0.353 | 0.000 | 37.551 | 0 | 203.052 | 190.709 | -39.288 | n/a |
+| medium × range_expansion | 49 | 0 | 26.124 | n/a | 0.633 | n/a | n/a | n/a | n/a | 0 | 157.541 | n/a | -200.204 | n/a |
 
 ### trade_density_bucket × distance_from_vwap_bucket
 
 | interaction | historical_count | recent_count | historical_expectancy_bps | recent_expectancy_bps | historical_win_rate | recent_win_rate | positive_tail_frequency_change | large_loss_frequency_change | degradation_bps | sample_sufficient | historical_average_winner_bps | recent_average_winner_bps | historical_average_loser_bps | recent_average_loser_bps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| n/a × -100 to -25 bps | 112 | 14 | 105.360 | -83.101 | 0.607 | 0.429 | -0.286 | 0.223 | -188.460 | 1 | 280.103 | 89.535 | -164.698 | -212.577 |
-| n/a × -25 to +25 bps | 170 | 11 | 21.274 | -141.378 | 0.565 | 0.273 | -0.153 | 0.366 | -162.652 | 1 | 135.786 | 101.724 | -127.281 | -232.541 |
-| n/a × below -100 bps | 3 | 0 | 314.199 | n/a | 1.000 | n/a | n/a | n/a | n/a | 0 | 314.199 | n/a | n/a | n/a |
+| high × -100 to -25 bps | 38 | 14 | 92.120 | -83.101 | 0.711 | 0.429 | -0.342 | 0.226 | -175.221 | 1 | 223.378 | 89.535 | -230.056 | -212.577 |
+| high × -25 to +25 bps | 40 | 10 | 48.311 | -174.587 | 0.575 | 0.200 | -0.125 | 0.450 | -222.898 | 1 | 143.906 | 57.232 | -81.023 | -232.541 |
+| low × -100 to -25 bps | 38 | 0 | 151.372 | n/a | 0.553 | n/a | n/a | n/a | n/a | 0 | 378.854 | n/a | -129.636 | n/a |
+| low × -25 to +25 bps | 62 | 0 | 23.990 | n/a | 0.548 | n/a | n/a | n/a | n/a | 0 | 137.980 | n/a | -114.427 | n/a |
+| low × below -100 bps | 2 | 0 | 202.997 | n/a | 1.000 | n/a | n/a | n/a | n/a | 0 | 202.997 | n/a | n/a | n/a |
+| medium × -100 to -25 bps | 36 | 0 | 70.766 | n/a | 0.556 | n/a | n/a | n/a | n/a | 0 | 252.992 | n/a | -157.017 | n/a |
+| medium × -25 to +25 bps | 68 | 1 | 2.895 | 190.709 | 0.574 | 1.000 | -0.191 | -0.103 | 187.815 | 0 | 129.086 | 190.709 | -166.810 | n/a |
+| medium × below -100 bps | 1 | 0 | 536.603 | n/a | 1.000 | n/a | n/a | n/a | n/a | 0 | 536.603 | n/a | n/a | n/a |
 
 ### trade_density_bucket × cvd_delta_bucket
 
 | interaction | historical_count | recent_count | historical_expectancy_bps | recent_expectancy_bps | historical_win_rate | recent_win_rate | positive_tail_frequency_change | large_loss_frequency_change | degradation_bps | sample_sufficient | historical_average_winner_bps | recent_average_winner_bps | historical_average_loser_bps | recent_average_loser_bps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| n/a × negative | 265 | 24 | 57.233 | -121.172 | 0.592 | 0.333 | -0.215 | 0.315 | -178.405 | 1 | 195.290 | 81.603 | -143.461 | -222.559 |
-| n/a × positive | 20 | 1 | 59.642 | 189.564 | 0.500 | 1.000 | -0.150 | -0.150 | 129.922 | 0 | 236.456 | 189.564 | -117.172 | n/a |
+| high × negative | 75 | 23 | 71.033 | -134.732 | 0.653 | 0.304 | -0.240 | 0.341 | -205.765 | 1 | 187.489 | 66.016 | -148.442 | -222.559 |
+| high × positive | 3 | 1 | 35.194 | 189.564 | 0.333 | 1.000 | 0.000 | 0.000 | 154.371 | 0 | 154.092 | 189.564 | -24.256 | n/a |
+| low × negative | 90 | 0 | 68.752 | n/a | 0.556 | n/a | n/a | n/a | n/a | 0 | 220.736 | n/a | -121.227 | n/a |
+| low × positive | 12 | 0 | 121.482 | n/a | 0.583 | n/a | n/a | n/a | n/a | 0 | 288.065 | n/a | -111.733 | n/a |
+| medium × negative | 100 | 1 | 36.516 | 190.709 | 0.580 | 1.000 | -0.210 | -0.110 | 154.194 | 0 | 179.944 | 190.709 | -161.553 | n/a |
+| medium × positive | 5 | 0 | -74.106 | n/a | 0.400 | n/a | n/a | n/a | n/a | 0 | 97.009 | n/a | -188.182 | n/a |
 
 ### distance_from_recent_high_low_bucket × local_trend_range_state
 
 | interaction | historical_count | recent_count | historical_expectancy_bps | recent_expectancy_bps | historical_win_rate | recent_win_rate | positive_tail_frequency_change | large_loss_frequency_change | degradation_bps | sample_sufficient | historical_average_winner_bps | recent_average_winner_bps | historical_average_loser_bps | recent_average_loser_bps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| n/a × mixed | 47 | 7 | -146.329 | -282.847 | 0.085 | 0.000 | -0.021 | 0.395 | -136.518 | 1 | 95.717 | n/a | -168.845 | -282.847 |
-| n/a × range | 102 | 9 | 177.681 | 1.903 | 0.794 | 0.556 | -0.373 | 0.203 | -175.777 | 1 | 243.704 | 118.812 | -76.981 | -144.233 |
-| n/a × range_expansion | 136 | 9 | 37.600 | -83.974 | 0.603 | 0.444 | -0.154 | 0.238 | -121.574 | 1 | 157.343 | 62.081 | -144.233 | -200.818 |
+| near recent low × mixed | 47 | 7 | -146.329 | -282.847 | 0.085 | 0.000 | -0.021 | 0.395 | -136.518 | 1 | 95.717 | n/a | -168.845 | -282.847 |
+| near recent low × range | 102 | 9 | 177.681 | 1.903 | 0.794 | 0.556 | -0.373 | 0.203 | -175.777 | 1 | 243.704 | 118.812 | -76.981 | -144.233 |
+| near recent low × range_expansion | 136 | 9 | 37.600 | -83.974 | 0.603 | 0.444 | -0.154 | 0.238 | -121.574 | 1 | 157.343 | 62.081 | -144.233 | -200.818 |
 
 ### distance_from_vwap_bucket × local_trend_range_state
 
@@ -239,19 +254,27 @@
 
 | interaction | historical_count | recent_count | historical_expectancy_bps | recent_expectancy_bps | historical_win_rate | recent_win_rate | positive_tail_frequency_change | large_loss_frequency_change | degradation_bps | sample_sufficient | historical_average_winner_bps | recent_average_winner_bps | historical_average_loser_bps | recent_average_loser_bps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| asia × n/a | 77 | 4 | 7.610 | -172.394 | 0.494 | 0.250 | -0.169 | 0.081 | -180.004 | 0 | 168.883 | 1.558 | -149.528 | -230.378 |
-| europe × n/a | 59 | 5 | 87.182 | -77.553 | 0.627 | 0.600 | -0.237 | 0.349 | -164.734 | 1 | 195.577 | 145.801 | -95.119 | -412.583 |
-| overlap × n/a | 47 | 4 | 69.758 | -54.506 | 0.596 | 0.250 | -0.191 | 0.165 | -124.264 | 0 | 197.631 | 190.709 | -118.687 | -136.244 |
-| us × n/a | 102 | 12 | 72.071 | -118.600 | 0.627 | 0.333 | -0.235 | 0.402 | -190.671 | 1 | 216.211 | 53.178 | -170.691 | -204.490 |
+| asia × high | 23 | 4 | -0.436 | -172.394 | 0.522 | 0.250 | -0.087 | 0.120 | -171.958 | 0 | 106.608 | 1.558 | -117.210 | -230.378 |
+| asia × low | 25 | 0 | 23.317 | n/a | 0.440 | n/a | n/a | n/a | n/a | 0 | 205.860 | n/a | -120.110 | n/a |
+| asia × medium | 29 | 0 | 0.451 | n/a | 0.517 | n/a | n/a | n/a | n/a | 0 | 191.588 | n/a | -204.339 | n/a |
+| europe × high | 16 | 5 | 63.122 | -77.553 | 0.625 | 0.600 | -0.188 | 0.275 | -140.674 | 1 | 174.013 | 145.801 | -121.698 | -412.583 |
+| europe × low | 23 | 0 | 150.304 | n/a | 0.696 | n/a | n/a | n/a | n/a | 0 | 264.109 | n/a | -109.821 | n/a |
+| europe × medium | 20 | 0 | 33.839 | n/a | 0.550 | n/a | n/a | n/a | n/a | 0 | 115.496 | n/a | -65.965 | n/a |
+| overlap × high | 12 | 3 | 132.992 | -136.244 | 0.750 | 0.000 | -0.417 | 0.333 | -269.236 | 0 | 206.212 | n/a | -86.668 | -136.244 |
+| overlap × low | 22 | 0 | 57.897 | n/a | 0.500 | n/a | n/a | n/a | n/a | 0 | 215.572 | n/a | -99.779 | n/a |
+| overlap × medium | 13 | 1 | 31.460 | 190.709 | 0.615 | 1.000 | -0.231 | -0.154 | 159.249 | 0 | 163.309 | 190.709 | -179.497 | n/a |
+| us × high | 27 | 12 | 105.081 | -118.600 | 0.704 | 0.333 | -0.296 | 0.426 | -223.682 | 1 | 235.037 | 53.178 | -203.562 | -204.490 |
+| us × low | 32 | 0 | 72.870 | n/a | 0.594 | n/a | n/a | n/a | n/a | 0 | 220.617 | n/a | -143.069 | n/a |
+| us × medium | 43 | 0 | 50.749 | n/a | 0.605 | n/a | n/a | n/a | n/a | 0 | 199.233 | n/a | -176.345 | n/a |
 
 ### weekday_weekend_effect × session_time_of_day_labels
 
 | interaction | historical_count | recent_count | historical_expectancy_bps | recent_expectancy_bps | historical_win_rate | recent_win_rate | positive_tail_frequency_change | large_loss_frequency_change | degradation_bps | sample_sufficient | historical_average_winner_bps | recent_average_winner_bps | historical_average_loser_bps | recent_average_loser_bps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| unknown × asia | 77 | 4 | 7.610 | -172.394 | 0.494 | 0.250 | -0.169 | 0.081 | -180.004 | 0 | 168.883 | 1.558 | -149.528 | -230.378 |
-| unknown × europe | 59 | 5 | 87.182 | -77.553 | 0.627 | 0.600 | -0.237 | 0.349 | -164.734 | 1 | 195.577 | 145.801 | -95.119 | -412.583 |
-| unknown × overlap | 47 | 4 | 69.758 | -54.506 | 0.596 | 0.250 | -0.191 | 0.165 | -124.264 | 0 | 197.631 | 190.709 | -118.687 | -136.244 |
-| unknown × us | 102 | 12 | 72.071 | -118.600 | 0.627 | 0.333 | -0.235 | 0.402 | -190.671 | 1 | 216.211 | 53.178 | -170.691 | -204.490 |
+| weekday × asia | 77 | 4 | 7.610 | -172.394 | 0.494 | 0.250 | -0.169 | 0.081 | -180.004 | 0 | 168.883 | 1.558 | -149.528 | -230.378 |
+| weekday × europe | 59 | 5 | 87.182 | -77.553 | 0.627 | 0.600 | -0.237 | 0.349 | -164.734 | 1 | 195.577 | 145.801 | -95.119 | -412.583 |
+| weekday × overlap | 47 | 4 | 69.758 | -54.506 | 0.596 | 0.250 | -0.191 | 0.165 | -124.264 | 0 | 197.631 | 190.709 | -118.687 | -136.244 |
+| weekday × us | 102 | 12 | 72.071 | -118.600 | 0.627 | 0.333 | -0.235 | 0.402 | -190.671 | 1 | 216.211 | 53.178 | -170.691 | -204.490 |
 
 ## Segment Stability
 
@@ -261,14 +284,14 @@
 | field | session_time_of_day_labels=europe | 59 | 5 | 2020:9, 2021:20, 2022:10, 2023:16, 2024:4, 2025:1, 2026:4 | 2020:102.013, 2021:220.964, 2022:-57.709, 2023:31.642, 2024:-30.713, 2025:-308.294, 2026:-19.867 | 1 | 1 | 0 |
 | field | local_trend_range_state=range | 102 | 9 | 2020:10, 2021:35, 2022:29, 2023:17, 2024:11, 2025:4, 2026:5 | 2020:178.439, 2021:299.307, 2022:91.636, 2023:34.991, 2024:237.365, 2025:-34.333, 2026:30.892 | 1 | 1 | 0 |
 | field | range_trend_label=range | 102 | 9 | 2020:10, 2021:35, 2022:29, 2023:17, 2024:11, 2025:4, 2026:5 | 2020:178.439, 2021:299.307, 2022:91.636, 2023:34.991, 2024:237.365, 2025:-34.333, 2026:30.892 | 1 | 1 | 0 |
-| interaction | trade_density_bucket × local_trend_range_state=n/a × range | 102 | 9 | aggregate-only | aggregate-only | 0 | 1 | 0 |
-| interaction | trade_density_bucket × distance_from_vwap_bucket=n/a × -100 to -25 bps | 112 | 14 | aggregate-only | aggregate-only | 0 | 0 | 1 |
-| interaction | distance_from_recent_high_low_bucket × local_trend_range_state=n/a × range | 102 | 9 | aggregate-only | aggregate-only | 0 | 1 | 0 |
+| interaction | trade_density_bucket × local_trend_range_state=high × range | 32 | 8 | aggregate-only | aggregate-only | 0 | 1 | 0 |
+| interaction | trade_density_bucket × distance_from_vwap_bucket=high × -100 to -25 bps | 38 | 14 | aggregate-only | aggregate-only | 0 | 0 | 1 |
+| interaction | distance_from_recent_high_low_bucket × local_trend_range_state=near recent low × range | 102 | 9 | aggregate-only | aggregate-only | 0 | 1 | 0 |
 | interaction | distance_from_vwap_bucket × local_trend_range_state=-100 to -25 bps × range_expansion | 61 | 8 | aggregate-only | aggregate-only | 0 | 1 | 0 |
 | interaction | distance_from_vwap_bucket × local_trend_range_state=-25 to +25 bps × range | 68 | 5 | aggregate-only | aggregate-only | 0 | 1 | 0 |
 | interaction | cvd_delta_bucket × local_trend_range_state=negative × range | 91 | 9 | aggregate-only | aggregate-only | 0 | 1 | 0 |
-| interaction | session_time_of_day_labels × trade_density_bucket=europe × n/a | 59 | 5 | aggregate-only | aggregate-only | 0 | 1 | 0 |
-| interaction | weekday_weekend_effect × session_time_of_day_labels=unknown × europe | 59 | 5 | aggregate-only | aggregate-only | 0 | 1 | 0 |
+| interaction | session_time_of_day_labels × trade_density_bucket=europe × high | 16 | 5 | aggregate-only | aggregate-only | 0 | 1 | 0 |
+| interaction | weekday_weekend_effect × session_time_of_day_labels=weekday × europe | 59 | 5 | aggregate-only | aggregate-only | 0 | 1 | 0 |
 
 ## Synthetic Causality / Leakage Checks
 

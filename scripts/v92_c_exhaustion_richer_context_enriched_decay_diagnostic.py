@@ -342,41 +342,77 @@ def _overall_fields_available(frame: pd.DataFrame) -> dict[str, bool]:
     }
 
 
+def _coverage_stats(frame: pd.DataFrame, field: str) -> dict[str, object]:
+    series = frame[field] if field in frame.columns else pd.Series([np.nan] * len(frame), index=frame.index)
+    total = int(len(frame))
+    non_null = int(series.notna().sum())
+    historical = _period_slice(frame, HISTORICAL_START_YEAR, HISTORICAL_END_YEAR)
+    recent = _period_slice(frame, RECENT_START_YEAR, RECENT_END_YEAR)
+    hist_series = historical[field] if field in historical.columns else pd.Series([np.nan] * len(historical), index=historical.index)
+    recent_series = recent[field] if field in recent.columns else pd.Series([np.nan] * len(recent), index=recent.index)
+    return {
+        "non_null_count": non_null,
+        "historical_non_null_count": int(hist_series.notna().sum()),
+        "recent_non_null_count": int(recent_series.notna().sum()),
+        "full_coverage_pct": (non_null / total) if total else 0.0,
+        "historical_coverage_pct": (hist_series.notna().sum() / len(historical)) if len(historical) else 0.0,
+        "recent_coverage_pct": (recent_series.notna().sum() / len(recent)) if len(recent) else 0.0,
+    }
+
+
 def _field_status_rows(frame: pd.DataFrame) -> list[dict[str, object]]:
     rows = []
-    colset = set(frame.columns)
-    if "entry_time" in colset:
-        rows.append({"field": "trade entry timestamp", "status": "available", "notes": "entry_time"})
-    if "year" in colset:
-        rows.append({"field": "year / period label", "status": "available", "notes": "year -> historical/recent split"})
-    rows.extend(
-        [
-            {"field": "trade_density", "status": "available", "notes": "trade_count from 750btc bars"},
-            {"field": "local_trend_range_state", "status": "available", "notes": "native range-trend state carried forward"},
-            {"field": "weekday_weekend_effect", "status": "available", "notes": "weekday/weekend flag from entry_time"},
-            {"field": "bar size", "status": "available", "notes": "static replay config: 750"},
-            {"field": "horizon", "status": "available", "notes": "static replay config: 36 bars"},
-            {"field": "side", "status": "available", "notes": "long-only assumed; side column absent"},
-            {"field": "original return bps", "status": "available", "notes": "gross_return_bps"},
-            {"field": "gross return bps", "status": "available", "notes": "gross_return_bps"},
-            {"field": "net return bps", "status": "available", "notes": "net_return_bps"},
-            {"field": "MFE / MAE", "status": "available", "notes": "computed from trade log and bounded bars"},
-            {"field": "exit class", "status": "available", "notes": "excursion_class / exit_class"},
-            {"field": "signal state", "status": "available", "notes": "c_signal / excursion-class context"},
-            {"field": "regime_label", "status": "available", "notes": "EXHAUSTED regime dominates"},
-            {"field": "volatility_label", "status": "available", "notes": "24-bar realized-vol bucket"},
-            {"field": "range_trend_label", "status": "available", "notes": "24-bar trend / failed-reversal / range label"},
-            {"field": "distance_from_recent_high_low", "status": "available", "notes": "normalized position inside prior 24-bar range"},
-            {"field": "distance_from_vwap", "status": "available", "notes": "close-vwap basis points"},
-            {"field": "prior_bar_return_path", "status": "available", "notes": "pre-signal 24-bar return bucket"},
-            {"field": "cvd_delta", "status": "available", "notes": "volume_delta sign bucket"},
-            {"field": "session_time_of_day_labels", "status": "available", "notes": "UTC session bucket"},
-            {"field": "raw L2", "status": "blocked", "notes": "not read"},
-            {"field": "OFI", "status": "blocked", "notes": "not generated"},
-            {"field": "row-level export", "status": "blocked", "notes": "not written"},
-            {"field": "future-return-derived eligibility labels", "status": "blocked", "notes": "post-hoc only"},
-        ]
-    )
+    descriptors = [
+        ("trade entry timestamp", "entry_time", "timestamp", "entry_time"),
+        ("year / period label", "year", "timestamp-derived", "year -> historical/recent split"),
+        ("trade_density", "trade_density", "available", "trade_count from signal_index bar"),
+        ("local_trend_range_state", "local_trend_range_state", "available", "native range-trend state carried forward"),
+        ("weekday_weekend_effect", "weekday_weekend_effect", "available", "weekday/weekend flag from signal_index bar"),
+        ("bar size", "bar_size", "static", "static replay config: 750"),
+        ("horizon", "horizon", "static", "static replay config: 36 bars"),
+        ("side", "side", "static", "long-only assumed; side column absent"),
+        ("original return bps", "original_return_bps", "available", "gross_return_bps"),
+        ("gross return bps", "gross_return_bps", "available", "gross_return_bps"),
+        ("net return bps", "net_return_bps", "available", "net_return_bps"),
+        ("MFE / MAE", "mfe_bps", "available", "computed from trade log and bounded bars"),
+        ("exit class", "exit_class", "available", "excursion_class / exit_class"),
+        ("signal state", "signal_state", "available", "c_signal / excursion-class context"),
+        ("regime_label", "regime_label", "available", "EXHAUSTED regime dominates"),
+        ("volatility_label", "volatility_label", "available", "24-bar realized-vol bucket"),
+        ("range_trend_label", "range_trend_label", "available", "24-bar trend / failed-reversal / range label"),
+        ("distance_from_recent_high_low", "distance_from_recent_high_low", "available_partial", "normalized position inside prior 24-bar range"),
+        ("distance_from_vwap", "distance_from_vwap", "available", "close-vwap basis points"),
+        ("prior_bar_return_path", "prior_bar_return_path", "available", "pre-signal 24-bar return bucket"),
+        ("cvd_delta", "cvd_delta", "available", "volume_delta sign bucket"),
+        ("session_time_of_day_labels", "session_time_of_day_labels", "available", "UTC session bucket"),
+        ("raw L2", None, "blocked", "not read"),
+        ("OFI", None, "blocked", "not generated"),
+        ("row-level export", None, "blocked", "not written"),
+        ("future-return-derived eligibility labels", None, "blocked", "post-hoc only"),
+    ]
+    for field, source, default_status, notes in descriptors:
+        if source is None:
+            rows.append({"field": field, "status": default_status, "notes": notes})
+            continue
+        stats = _coverage_stats(frame, source)
+        status = default_status
+        if stats["non_null_count"] == 0:
+            status = "blocked_insufficient_coverage"
+        elif 0 < stats["non_null_count"] < len(frame):
+            status = "available_partial" if default_status.startswith("safe") or default_status == "safe_available" else default_status
+        rows.append(
+            {
+                "field": field,
+                "status": status,
+                "non_null_count": stats["non_null_count"],
+                "historical_non_null_count": stats["historical_non_null_count"],
+                "recent_non_null_count": stats["recent_non_null_count"],
+                "full_coverage_pct": stats["full_coverage_pct"],
+                "historical_coverage_pct": stats["historical_coverage_pct"],
+                "recent_coverage_pct": stats["recent_coverage_pct"],
+                "notes": notes,
+            }
+        )
     return rows
 
 
@@ -654,13 +690,15 @@ def _build_context(trades: pd.DataFrame, bars: pl.DataFrame) -> pd.DataFrame:
         return ts
 
     context = _compute_trade_context(trades, bars).copy()
-    context["year"] = pd.to_numeric(context["year"], errors="coerce").astype("Int64")
+    context["entry_time"] = _normalize_datetime(context["entry_time"])
+    context["signal_time"] = _normalize_datetime(context["signal_time"]) if "signal_time" in context.columns else pd.NaT
+    context["exit_time"] = _normalize_datetime(context["exit_time"]) if "exit_time" in context.columns else pd.NaT
+    context["year"] = context["entry_time"].dt.year.astype("Int64")
     context["period"] = context["year"].apply(_period_label)
     context["original_return_bps"] = pd.to_numeric(context["gross_return_bps"], errors="coerce")
     context["bar_size"] = 750
     context["horizon"] = 36
     context["side"] = "long-only (assumed; side column absent)" if "side" not in trades.columns else context.get("side")
-    context["entry_time"] = _normalize_datetime(context["entry_time"])
 
     signal_frame = attach_c_exhaustion_signal(bars).with_row_index("signal_index").to_pandas()
     keep_cols = [col for col in ["signal_index", "vwap", "volume_delta"] if col in signal_frame.columns]
@@ -672,7 +710,7 @@ def _build_context(trades: pd.DataFrame, bars: pl.DataFrame) -> pd.DataFrame:
     context["distance_from_vwap"] = np.where(vwap.notna(), (close / vwap - 1.0) * 10_000.0, np.nan)
     context["distance_from_vwap_bucket"] = context["distance_from_vwap"].map(_bucket_distance_from_vwap)
 
-    bars_pd = bars.to_pandas().copy()
+    bars_pd = bars.to_pandas().copy().reset_index(drop=True)
     bars_pd["open_time"] = _normalize_datetime(bars_pd["open_time"])
     for col in ["open", "high", "low", "close", "volume", "trade_count", "total_notional", "volume_delta"]:
         if col in bars_pd.columns:
@@ -681,12 +719,13 @@ def _build_context(trades: pd.DataFrame, bars: pl.DataFrame) -> pd.DataFrame:
     bars_pd["recent_low_24"] = bars_pd["low"].rolling(window=24, min_periods=24).min().shift(1)
     bars_pd["range_position_24"] = (bars_pd["close"] - bars_pd["recent_low_24"]) / (bars_pd["recent_high_24"] - bars_pd["recent_low_24"])
     bars_pd["range_position_24"] = bars_pd["range_position_24"].replace([np.inf, -np.inf], np.nan)
-    bars_pd["trade_density"] = bars_pd["trade_count"]
+    bars_pd["trade_density"] = bars_pd["trade_count"] if "trade_count" in bars_pd.columns else np.nan
     bars_pd["weekday_weekend_effect"] = bars_pd["open_time"].map(_bucket_weekday_weekend)
-    position_by_open = bars_pd.set_index("open_time")["range_position_24"]
-    signal_open_times = pd.to_datetime(context["entry_time"], errors="coerce")
-    signal_open_series = signal_open_times.map(position_by_open)
-    context["distance_from_recent_high_low"] = signal_open_series.astype(float)
+
+    signal_idx = pd.to_numeric(context["signal_index"], errors="coerce")
+    context["trade_density"] = signal_idx.map(bars_pd["trade_density"])
+    context["weekday_weekend_effect"] = signal_idx.map(bars_pd["weekday_weekend_effect"])
+    context["distance_from_recent_high_low"] = signal_idx.map(bars_pd["range_position_24"]).astype(float)
     context["distance_from_recent_high_low_bucket"] = context["distance_from_recent_high_low"].map(_bucket_recent_range_position)
 
     context["prior_bar_return_path"] = pd.to_numeric(context["pre_signal_return_24_bars_bps"], errors="coerce")
@@ -694,12 +733,6 @@ def _build_context(trades: pd.DataFrame, bars: pl.DataFrame) -> pd.DataFrame:
     context["cvd_delta"] = pd.to_numeric(context.get("volume_delta"), errors="coerce")
     context["cvd_delta_bucket"] = context["cvd_delta"].map(_bucket_cvd)
     context["session_time_of_day_labels"] = context["entry_time"].map(_bucket_session)
-    context = context.merge(
-        bars_pd[["open_time", "trade_density", "weekday_weekend_effect"]],
-        left_on="entry_time",
-        right_on="open_time",
-        how="left",
-    ).drop(columns=["open_time"])
     context["trade_density"] = pd.to_numeric(context["trade_density"], errors="coerce")
     q1 = context["trade_density"].quantile(0.33)
     q2 = context["trade_density"].quantile(0.67)
@@ -716,44 +749,14 @@ def _build_context(trades: pd.DataFrame, bars: pl.DataFrame) -> pd.DataFrame:
 
 
 def _field_availability_rows(frame: pd.DataFrame) -> tuple[list[dict[str, object]], list[str], list[str], list[str], list[str]]:
-    available_fields = []
-    missing_fields = []
-    used_fields = [
-        "trade entry timestamp",
-        "year / period label",
-        "bar size",
-        "horizon",
-        "side",
-        "trade_density",
-        "local_trend_range_state",
-        "weekday_weekend_effect",
-        "original return bps",
-        "gross return bps",
-        "net return bps",
-        "MFE / MAE",
-        "exit class",
-        "signal state",
-        "regime_label",
-        "volatility_label",
-        "range_trend_label",
-        "distance_from_recent_high_low",
-        "distance_from_vwap",
-        "prior_bar_return_path",
-        "cvd_delta",
-        "session_time_of_day_labels",
-    ]
-    blocked_fields = [
-        "raw L2",
-        "OFI",
-        "row-level export",
-        "future-return-derived eligibility labels",
-    ]
     rows = _field_status_rows(frame)
+    available_fields = [row["field"] for row in rows if row["status"] in {"available", "available_partial"}]
+    used_fields = list(available_fields)
+    blocked_fields = [row["field"] for row in rows if str(row["status"]).startswith("blocked")]
+    missing_fields = [row["field"] for row in rows if row["status"] == "blocked_insufficient_coverage"]
     for row in rows:
         if row["status"] == "available":
-            available_fields.append(row["field"])
-        elif row["status"] == "blocked":
-            blocked_fields.append(row["field"])
+            continue
     return rows, available_fields, missing_fields, used_fields, blocked_fields
 
 

@@ -15,6 +15,7 @@ def _sample_bars() -> pl.DataFrame:
     lows = opens - 1.0
     closes = opens + 0.25
     volume = 1000.0 + pd.Series(range(60), dtype="float64") * 10.0
+    trade_count = 100.0 + pd.Series(range(60), dtype="float64")
     volume_delta = pd.Series(range(-30, 30), dtype="float64")
     vwap = opens + 0.1
     return pl.DataFrame(
@@ -32,6 +33,7 @@ def _sample_bars() -> pl.DataFrame:
             "rv_15th_pct": 8.0 + pd.Series(range(60), dtype="float64") * 0.05,
             "vwap": vwap,
             "volume": volume,
+            "trade_count": trade_count,
             "volume_delta": volume_delta,
             "regime": ["EXHAUSTED"] * 60,
         }
@@ -54,55 +56,6 @@ def _sample_trades() -> pd.DataFrame:
             "net_return_bps": [115.0],
             "year": [2024],
             "excursion_class": ["clean_winner"],
-        }
-    )
-
-
-def _sample_context() -> pd.DataFrame:
-    entry_times = pd.to_datetime(
-        [
-            "2024-01-01 01:00:00",
-            "2024-01-01 09:00:00",
-            "2024-01-01 14:30:00",
-            "2024-01-01 18:00:00",
-            "2025-01-01 02:00:00",
-            "2025-01-01 10:00:00",
-            "2025-01-01 15:00:00",
-            "2025-01-01 20:00:00",
-        ]
-    )
-    return pd.DataFrame(
-        {
-            "signal_index": list(range(8)),
-            "entry_time": entry_times,
-            "signal_time": entry_times - pd.Timedelta(minutes=5),
-            "year": [2024, 2024, 2024, 2024, 2025, 2025, 2025, 2025],
-            "gross_return_bps": [140.0, 80.0, -60.0, -120.0, 30.0, -40.0, -90.0, 20.0],
-            "net_return_bps": [135.0, 75.0, -65.0, -125.0, 25.0, -45.0, -95.0, 15.0],
-            "original_return_bps": [140.0, 80.0, -60.0, -120.0, 30.0, -40.0, -90.0, 20.0],
-            "bar_size": [750] * 8,
-            "horizon": [36] * 8,
-            "side": ["long-only (assumed; side column absent)"] * 8,
-            "trade_density": [10.0, 20.0, 30.0, 12.0, 15.0, 25.0, 35.0, 40.0],
-            "trade_density_bucket": ["low", "low", "medium", "low", "medium", "medium", "high", "high"],
-            "distance_from_recent_high_low": [0.1, 0.5, 0.9, 0.4, 0.2, 0.7, 0.8, 0.95],
-            "distance_from_recent_high_low_bucket": ["near recent low", "middle range", "near recent high", "middle range", "near recent low", "middle range", "near recent high", "near recent high"],
-            "local_trend_range_state": ["range", "range_expansion", "failed_reversal", "trend_continuation", "range", "mixed", "range", "range_expansion"],
-            "distance_from_vwap": [-120.0, -80.0, -10.0, 40.0, -90.0, -20.0, 60.0, 150.0],
-            "distance_from_vwap_bucket": ["below -100 bps", "-100 to -25 bps", "-25 to +25 bps", "+25 to +100 bps", "-100 to -25 bps", "-25 to +25 bps", "+25 to +100 bps", "above +100 bps"],
-            "prior_bar_return_path": [-50.0, -5.0, 10.0, 45.0, 30.0, -35.0, 0.0, 20.0],
-            "prior_bar_return_path_bucket": ["negative", "flat", "flat", "positive", "positive", "negative", "flat", "flat"],
-            "cvd_delta": [-5.0, 0.0, 7.0, -3.0, 2.0, -8.0, 4.0, 1.0],
-            "cvd_delta_bucket": ["negative", "neutral", "positive", "negative", "positive", "negative", "positive", "positive"],
-            "session_time_of_day_labels": ["asia", "europe", "overlap", "us", "asia", "europe", "overlap", "us"],
-            "weekday_weekend_effect": ["weekday", "weekday", "weekday", "weekday", "weekday", "weekday", "weekday", "weekday"],
-            "volatility_label": ["<25", "25-50", "50-100", ">100", "<25", "25-50", "50-100", ">100"],
-            "range_trend_label": ["range", "range_expansion", "failed_reversal", "trend_continuation", "range", "mixed", "range", "range_expansion"],
-            "regime_label": ["EXHAUSTED"] * 8,
-            "signal_state": ["c_signal"] * 8,
-            "exit_class": ["clean_winner", "clean_winner", "giveback_loss", "giveback_loss", "weak_positive_exit", "weak_positive_exit", "clean_winner", "giveback_loss"],
-            "mfe_bps": [300.0, 250.0, 220.0, 210.0, 180.0, 170.0, 260.0, 230.0],
-            "mae_bps": [-40.0, -35.0, -60.0, -80.0, -30.0, -55.0, -45.0, -70.0],
         }
     )
 
@@ -136,21 +89,92 @@ def test_synthetic_causality_checks_all_pass() -> None:
     assert all(result.passed for result in results)
 
 
+def test_period_assignment_tracks_entry_time_year_boundary() -> None:
+    bars = _sample_bars()
+    trades = _sample_trades()
+
+    current = diag._build_context(trades, bars)
+    assert int(current.loc[0, "year"]) == 2024
+    assert current.loc[0, "period"] == "historical"
+
+    shifted = trades.copy()
+    for col in ["signal_time", "entry_time", "exit_time"]:
+        shifted[col] = pd.to_datetime(shifted[col]) + pd.Timedelta(days=366)
+    shifted["year"] = 2025
+    future = diag._build_context(shifted, bars)
+    assert int(future.loc[0, "year"]) == 2025
+    assert future.loc[0, "period"] == "recent"
+
+
+def test_field_coverage_requires_non_null_values() -> None:
+    bars = _sample_bars()
+    trades = _sample_trades()
+    frame = diag._build_context(trades, bars)
+    rows, available_fields, missing_fields, used_fields, blocked_fields = diag._field_availability_rows(frame)
+    by_field = {row["field"]: row for row in rows}
+
+    for field in ["trade_density", "distance_from_recent_high_low", "weekday_weekend_effect"]:
+        row = by_field[field]
+        assert row["non_null_count"] > 0
+        assert row["status"] in {"available", "available_partial"}
+
+    for row in rows:
+        if row["status"] in {"available", "available_partial"}:
+            assert row["non_null_count"] > 0
+
+    assert "trade_density" in available_fields
+    assert "distance_from_recent_high_low" in available_fields
+    assert "weekday_weekend_effect" in available_fields
+    assert "trade_density" in used_fields
+    assert "distance_from_recent_high_low" in used_fields
+    assert "weekday_weekend_effect" in used_fields
+    assert "raw L2" in blocked_fields
+    assert "OFI" in blocked_fields
+    assert "row-level export" in blocked_fields
+    assert "trade_density" not in missing_fields
+    assert "distance_from_recent_high_low" not in missing_fields
+    assert "weekday_weekend_effect" not in missing_fields
+
+
+def test_bucket_coverage_is_not_all_na_when_source_exists() -> None:
+    bars = _sample_bars()
+    trades = _sample_trades()
+    frame = diag._build_context(trades, bars)
+
+    trade_density_rows = diag._bucket_rows(frame, "trade_density_bucket")
+    distance_rows = diag._bucket_rows(frame, "distance_from_recent_high_low_bucket")
+    weekday_rows = diag._bucket_rows(frame, "weekday_weekend_effect")
+
+    assert any(row["historical_count"] > 0 or row["recent_count"] > 0 for row in trade_density_rows if row["bucket"] != "n/a")
+    assert any(row["historical_count"] > 0 or row["recent_count"] > 0 for row in distance_rows if row["bucket"] != "n/a")
+    assert any(row["historical_count"] > 0 or row["recent_count"] > 0 for row in weekday_rows if row["bucket"] in {"weekday", "weekend"})
+
+
+def test_weekday_weekend_effect_is_derived_from_entry_context() -> None:
+    bars = _sample_bars()
+    trades = _sample_trades()
+    frame = diag._build_context(trades, bars)
+
+    assert frame["weekday_weekend_effect"].notna().all()
+    assert set(frame["weekday_weekend_effect"].unique()) <= {"weekday", "weekend"}
+
+
 def test_build_report_smoke(monkeypatch) -> None:
     bars = _sample_bars()
     trades = _sample_trades()
-    context = _sample_context()
 
     monkeypatch.setattr(diag, "_parse_trade_frame", lambda _: trades.copy())
     monkeypatch.setattr(diag, "load_750btc_bars", lambda _: bars)
     monkeypatch.setattr(diag, "normalize_v92_bar_timestamps", lambda df: df)
     monkeypatch.setattr(diag, "add_v92_regime_labels", lambda df: df)
-    monkeypatch.setattr(diag, "_build_context", lambda _trades, _bars: context.copy())
 
     report, metadata = diag.build_report(Path("trade_log.csv"), Path("bars"))
     assert "V9.2 Hermes C Exhaustion Richer Context Enriched Decay Diagnostic" in report
     assert "## Stop / Go Conclusion" in report
-    assert metadata["total_trades"] == len(context)
+    assert "no raw L2 is read" in report
+    assert "OFI is not generated" in report
+    assert "no row-level artifacts are exported" in report
+    assert metadata["total_trades"] == 1
     assert metadata["decision"] in {
         "proceed_to_preregistered_richer_context_filter_design_only",
         "keep_anchor_alive_but_collect_more_inputs",
