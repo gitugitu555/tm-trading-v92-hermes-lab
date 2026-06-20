@@ -3,6 +3,7 @@ agents:
     command: hermes
     profile: vega
     role: orchestrator
+    invocation_mode: direct_cli
     can_commit: false
     can_push: false
 
@@ -10,6 +11,8 @@ agents:
     command: opencode
     model_hint: deepseek-v4-flash-free
     role: implementation
+    invocation_mode: hermes_delegate
+    delegate_name: opencode
     can_commit: false
     can_push: false
 
@@ -18,12 +21,15 @@ agents:
     alternate_command: kilocode
     model_hint: nex-2-pro-free
     role: review_verification
+    invocation_mode: hermes_delegate
+    delegate_name: kilo
     can_commit: false
     can_push: false
 
   vibe_strategy:
     command: vibe
     role: deep_strategy_discussion
+    invocation_mode: direct_cli
     can_commit: false
     can_push: false
 
@@ -31,6 +37,7 @@ agents:
     command: zcode
     model_hint: glm-5.2
     role: large_context_research
+    invocation_mode: direct_cli
     can_commit: false
     can_push: false
 

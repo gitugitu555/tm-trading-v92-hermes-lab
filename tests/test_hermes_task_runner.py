@@ -263,6 +263,70 @@ def test_rejects_unknown_agent():
         runner.main(["--agent", "unknown", "--task-id", "TASK-001"])
 
 
+def test_execute_mode_refuses_dirty(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "_load_task", lambda task_id: TaskContext(
+        task_id="TASK-001",
+        title="Title",
+        status="pending",
+        branch_name="research/nonparametric-failure-attribution-diagnostic-lab",
+        objective="Objective",
+        context="Context",
+        allowed_files=["scripts/example.py"],
+        forbidden_files=["upstream/**"],
+        validation_commands=["pytest -q"],
+    ))
+    # Simulate dirty guard (fails without --allow-dirty)
+    monkeypatch.setattr(runner, "evaluate_guard", lambda allow_dirty, allow_any_root: {
+        "ok": False,
+        "repo_root": str(tmp_path),
+        "branch": "research/nonparametric-failure-attribution-diagnostic-lab",
+        "origin_url": "origin",
+        "upstream_url": "upstream",
+        "dirty": True,
+        "suspicious_files_present": [],
+        "failures": ["git status is dirty"],
+    })
+    monkeypatch.setattr(runner, "_remote_map", lambda: {"origin": "origin", "upstream": "upstream"})
+    exit_code = runner.main(["--task-id", "TASK-001", "--execute", "--json"])
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert '"ok": false' in output
+
+
+def test_dry_run_may_allow_dirty(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "_load_task", lambda task_id: TaskContext(
+        task_id="TASK-001",
+        title="Title",
+        status="pending",
+        branch_name="research/nonparametric-failure-attribution-diagnostic-lab",
+        objective="Objective",
+        context="Context",
+        allowed_files=["scripts/example.py"],
+        forbidden_files=["upstream/**"],
+        validation_commands=["pytest -q"],
+    ))
+    # Simulate dirty guard that passes with --allow-dirty
+    monkeypatch.setattr(runner, "evaluate_guard", lambda allow_dirty, allow_any_root: {
+        "ok": allow_dirty,  # PASS only if allow_dirty is True
+        "repo_root": str(tmp_path),
+        "branch": "research/nonparametric-failure-attribution-diagnostic-lab",
+        "origin_url": "origin",
+        "upstream_url": "upstream",
+        "dirty": True,
+        "suspicious_files_present": [],
+        "failures": [] if allow_dirty else ["git status is dirty"],
+    })
+    monkeypatch.setattr(runner, "_remote_map", lambda: {"origin": "origin", "upstream": "upstream"})
+    monkeypatch.setattr(runner, "_write_report", lambda task_id, report: tmp_path / "reports" / "hermes_runs" / f"{task_id}.md")
+    # dry-run with --allow-dirty should pass
+    exit_code = runner.main(["--task-id", "TASK-001", "--allow-dirty", "--json"])
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert '"dry_run": true' in output
+
+
 def test_never_references_push_to_upstream_as_allowed_action():
     task = TaskContext(
         task_id="TASK-001",

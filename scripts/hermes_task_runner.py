@@ -192,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
             if payload["branch_warning"]:
                 print(f"branch_warning: {payload['branch_warning']}")
         return 0 if council_result["ok"] else 1
-    guard_result = evaluate_guard(allow_dirty=args.allow_dirty or args.execute, allow_any_root=False)
+    guard_result = evaluate_guard(allow_dirty=args.allow_dirty, allow_any_root=False)
     branch = guard_result["branch"] or ""
     branch_matches_task = branch == task.branch_name
     branch_warning = "" if branch_matches_task else f"branch mismatch: expected {task.branch_name}, found {branch or 'detached'}"

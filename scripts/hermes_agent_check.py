@@ -34,6 +34,13 @@ ROLE_MAP = {
     },
 }
 
+DEFAULT_INVOCATION_MODE = "direct_cli"
+
+HERMES_DELEGATE_AGENTS = {
+    "opencode_deepseek_flash": {"command": "opencode", "delegate_name": "opencode"},
+    "kilo_nex2_review": {"command": "kilo", "alternate_command": "kilocode", "delegate_name": "kilo"},
+}
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -86,7 +93,60 @@ def inspect_commands() -> list[dict[str, object]]:
     return rows
 
 
-def _markdown_summary(commands: list[dict[str, object]]) -> str:
+def build_agent_inventory() -> dict[str, dict[str, object]]:
+    inventory: dict[str, dict[str, object]] = {}
+    direct_commands = {row["name"]: row for row in inspect_commands()}
+    for role, info in ROLE_MAP.items():
+        preferred = info.get("preferred_command")
+        preferred_options = info.get("preferred_command_options")
+        if preferred:
+            command = preferred
+            available = direct_commands.get(command, {}).get("available", False)
+        elif preferred_options:
+            command = preferred_options[0]
+            available = any(direct_commands.get(opt, {}).get("available", False) for opt in preferred_options)
+        else:
+            command = None
+            available = False
+
+        if role in HERMES_DELEGATE_AGENTS:
+            invocation_mode = "hermes_delegate"
+            delegate_info = HERMES_DELEGATE_AGENTS[role]
+            delegate_name = delegate_info.get("delegate_name")
+            hermes_available = direct_commands.get("hermes", {}).get("available", False)
+            if available:
+                state = "direct_cli_available"
+                overall_available = True
+            elif hermes_available:
+                state = "available_via_hermes_delegate"
+                overall_available = True
+            else:
+                state = "hermes_delegate_configured"
+                overall_available = False
+        else:
+            invocation_mode = DEFAULT_INVOCATION_MODE
+            delegate_name = None
+            if available:
+                state = "direct_cli_available"
+                overall_available = True
+            else:
+                state = "unavailable"
+                overall_available = False
+
+        inventory[role] = {
+            "preferred_command": command,
+            "invocation_mode": invocation_mode,
+            "delegate_name": delegate_name,
+            "direct_cli_available": available,
+            "hermes_delegate_configured": invocation_mode == "hermes_delegate",
+            "available_via_hermes_delegate": (invocation_mode == "hermes_delegate" and not available and direct_commands.get("hermes", {}).get("available", False)),
+            "state": state,
+            "available": overall_available,
+        }
+    return inventory
+
+
+def _markdown_summary(commands: list[dict[str, object]], inventory: dict[str, dict[str, object]]) -> str:
     lines = ["# Hermes Agent Check", ""]
     lines.append("## Command Inventory")
     lines.append("")
@@ -99,6 +159,21 @@ def _markdown_summary(commands: list[dict[str, object]]) -> str:
                 available=str(row["available"]).lower(),
                 path=row["path"] or "",
                 version=row["version"] or "",
+            )
+        )
+    lines.append("")
+    lines.append("## Agent Inventory")
+    lines.append("")
+    lines.append("| agent | command | invocation_mode | state | available |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for role, info in inventory.items():
+        lines.append(
+            "| {role} | {command} | {mode} | {state} | {available} |".format(
+                role=role,
+                command=info.get("preferred_command", ""),
+                mode=info.get("invocation_mode", ""),
+                state=info.get("state", ""),
+                available=str(info.get("available", False)).lower(),
             )
         )
     lines.append("")
@@ -116,16 +191,18 @@ def _markdown_summary(commands: list[dict[str, object]]) -> str:
 
 def build_result() -> dict[str, object]:
     commands = inspect_commands()
-    return {"commands": commands, "roles": ROLE_MAP}
+    inventory = build_agent_inventory()
+    return {"commands": commands, "inventory": inventory, "roles": ROLE_MAP}
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    result = build_result()
+    commands = inspect_commands()
+    inventory = build_agent_inventory()
     if args.json:
-        print(json.dumps(result, indent=2, sort_keys=True))
+        print(json.dumps({"commands": commands, "inventory": inventory, "roles": ROLE_MAP}, indent=2, sort_keys=True))
     else:
-        print(_markdown_summary(result["commands"]))
+        print(_markdown_summary(commands, inventory))
     return 0
 
 
