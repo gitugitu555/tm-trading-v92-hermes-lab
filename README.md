@@ -1,4 +1,6 @@
-# TM Trading V9.2 Core
+# TM Trading V9.2 Hermes Lab
+
+tm-trading-v92-core is now the consolidated read-only checkpoint / evidence ledger. This repository, tm-trading-v92-hermes-lab, is the active research continuation repo.
 
 ## Architecture Overhaul
 This is the pristine, consolidated V9.2 repository designed to strip away the legacy context drift and failed parameters of V7.x. 
