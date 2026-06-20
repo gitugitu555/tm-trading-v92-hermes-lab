@@ -50,7 +50,26 @@ Unavailable commands:
 - `scripts/hermes_lab_guard.py --allow-dirty` passes with the expected lab remotes and no suspicious files.
 - Suspicious Gemini files remain absent.
 
-## Task Runner Behavior
+## Agent Invocation Modes
+
+Agents are now classified by invocation mode in `docs/HERMES_AGENT_ROSTER.md`:
+
+| agent | command | invocation_mode |
+|---|---|---|
+| vega_orchestrator | hermes | direct_cli |
+| opencode_deepseek_flash | opencode | hermes_delegate |
+| kilo_nex2_review | kilo | hermes_delegate |
+| vibe_strategy | vibe | direct_cli |
+| zcode_glm52_research | zcode | direct_cli |
+
+Delegate-mode agents (`opencode`, `kilo`) may be invoked via `hermes delegate` rather than direct CLI. They are not marked unavailable merely because their direct CLI is missing, as long as `hermes` is available.
+
+## Guard Modes
+
+The guard has two modes:
+
+- **Strict (default)**: dirty working tree is a `FAIL`. Required before execution, commit, push, merge.
+- **Development (`--allow-dirty`)**: dirty working tree is a `WARN`. Allowed only for dry-run, availability checks, council reports, and diagnostics.
 
 - `scripts/hermes_task_runner.py` reads `docs/HERMES_TASK_QUEUE.md`, selects the first pending task, runs the guard, and writes a run report under `reports/hermes_runs/`.
 - The runner is conservative by default and does not commit or push.
