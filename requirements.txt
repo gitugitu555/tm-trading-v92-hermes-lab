@@ -1,9 +1,9 @@
-numpy
-pandas
-polars
-pyarrow
-numba
-zstandard
-pytest
+numpy>=1.26,<3
+pandas>=2.1,<3
+polars>=0.20,<2
+pyarrow>=14,<20
+numba>=0.59,<1
+zstandard>=0.22,<1
+pytest>=8,<9
 sortedcontainers>=2.4,<3
 scikit-learn>=1.4,<2
