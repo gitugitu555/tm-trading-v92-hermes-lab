@@ -13,15 +13,43 @@ computed from the best bid / best ask transition between events.
 
 This repairs OFI infrastructure only. It does not approve any strategy,
 paper-trading rule, or live-trading rule.
+
+Optional surfaces
+-----------------
+
+Two opt-in helpers sit alongside the canonical ``process_event`` /
+``process_update`` API and never change its return value or behavior:
+
+* ``OFIEngine.process_event_with_classification`` returns the same OFI as
+  ``process_event`` plus a list of ``LevelEvent`` records (ADD/AMEND/
+  CANCEL/TRUNCATE/UNCHANGED) computed relative to the engine's prior book
+  view. Classification is provided by
+  ``features.microstructure_event_classifier`` and is a pure
+  post-processing step.
+
+* ``process_event_stream(events)`` runs an iterable of event dicts through a
+  single engine instance and yields per-event records. This is the path
+  intended for streaming historical replay and avoids the per-row engine
+  allocation overhead that ``process_chunk`` historically paid when callers
+  re-implemented their own loop.
 """
 
 from __future__ import annotations
 
 from ast import literal_eval
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 import pandas as pd
+
+try:  # pragma: no cover - optional companion, exercised when classifier is used
+    from features.microstructure_event_classifier import (
+        LevelEvent,
+        classify_levels,
+    )
+except ImportError:  # pragma: no cover
+    LevelEvent = None  # type: ignore[assignment]
+    classify_levels = None  # type: ignore[assignment]
 
 try:  # pragma: no cover - dependency path is exercised in integration tests
     from sortedcontainers import SortedDict
@@ -196,6 +224,125 @@ class OFIEngine:
         )
         return 0.0 if event_ofi is None else float(event_ofi)
 
+    def process_event_with_classification(
+        self,
+        bids: list[tuple[float, float]] | None = None,
+        asks: list[tuple[float, float]] | None = None,
+        event_time=None,
+        first_update_id=None,
+        final_update_id=None,
+        previous_update_id=None,
+    ) -> tuple[float | None, list[Any], list[Any]]:
+        """Like :meth:`process_event` but also returns classified level events.
+
+        The returned tuple is ``(ofi, classified_bids, classified_asks)``:
+
+        * ``ofi`` -- identical to :meth:`process_event` return value.
+        * ``classified_bids`` / ``classified_asks`` -- lists of
+          ``LevelEvent`` records describing how each (price, qty) update in
+          this event relates to the engine's prior book view.
+
+        Classification is computed against the engine's *prior* book (the
+        state immediately before this event was applied) so the engine's
+        own diff application is the source of truth. If a sequence gap
+        forces ``requires_resync`` before this call, both classification
+        lists are empty and ``ofi`` is ``None``.
+
+        This method never mutates the engine differently from
+        :meth:`process_event`; the only side effect is the same OFI /
+        warmup bookkeeping the canonical path already performs.
+        """
+
+        bids = bids or []
+        asks = asks or []
+        if classify_levels is None:
+            raise RuntimeError(
+                "features.microstructure_event_classifier is not importable;"
+                " install/import the module before calling process_event_with_classification"
+            )
+
+        prior_bids = {float(p): float(q) for p, q in self.bids.items()}
+        prior_asks = {float(p): float(q) for p, q in self.asks.items()}
+
+        ofi = self.process_event(
+            bids=bids,
+            asks=asks,
+            event_time=event_time,
+            first_update_id=first_update_id,
+            final_update_id=final_update_id,
+            previous_update_id=previous_update_id,
+        )
+
+        if self.requires_resync:
+            return ofi, [], []
+
+        classified_bids = classify_levels("bid", bids, prior_bids)
+        classified_asks = classify_levels("ask", asks, prior_asks)
+        return ofi, classified_bids, classified_asks
+
+
+@dataclass(frozen=True)
+class EventStreamRecord:
+    """Per-event record yielded by :func:`process_event_stream`."""
+
+    index: int
+    ofi: float | None
+    event_time: Any
+    final_update_id: int | None
+    requires_resync: bool
+
+
+def process_event_stream(
+    events: Iterable[dict[str, Any]],
+    engine: OFIEngine | None = None,
+) -> Iterator[EventStreamRecord]:
+    """Replay an iterable of L2 event dicts through a single ``OFIEngine``.
+
+    Each input event is a dict with the same shape accepted by
+    :meth:`OFIEngine.process_event` (``bids``, ``asks``, optionally
+    ``event_time`` / ``first_update_id`` / ``final_update_id`` /
+    ``previous_update_id``).
+
+    A single engine instance is constructed when none is supplied and
+    reused across every event in the iterable, which preserves warmup
+    state and the sequence-gap guard across packets. Callers that need a
+    fresh segment should construct their own ``OFIEngine`` and pass it in
+    -- this matches what ``run_segment_with_ofi_engine`` already does.
+
+    The iterator yields ``EventStreamRecord`` per input event so callers
+    can route results into a polars/pandas sink row by row without ever
+    allocating a second engine instance.
+    """
+
+    if engine is None:
+        engine = OFIEngine()
+
+    for idx, event in enumerate(events):
+        bids = event.get("bids")
+        asks = event.get("asks")
+        # Coerce tuple-like input to lists so the engine path is uniform.
+        if bids is not None and not isinstance(bids, list):
+            bids = list(bids)
+        if asks is not None and not isinstance(asks, list):
+            asks = list(asks)
+
+        ofi = engine.process_event(
+            bids=bids,
+            asks=asks,
+            event_time=event.get("event_time"),
+            first_update_id=event.get("first_update_id"),
+            final_update_id=event.get("final_update_id"),
+            previous_update_id=event.get("previous_update_id"),
+        )
+
+        yield EventStreamRecord(
+            index=idx,
+            ofi=ofi,
+            event_time=event.get("event_time"),
+            final_update_id=engine.last_update_id,
+            requires_resync=engine.requires_resync,
+        )
+
 
 def _parse_levels(cell: Any) -> list[tuple[float, float]]:
     if cell is None or (isinstance(cell, float) and pd.isna(cell)):
@@ -221,6 +368,26 @@ def process_chunk(df: pd.DataFrame) -> pd.DataFrame:
     The input DataFrame is never mutated. Legacy single-update rows with
     ``side``, ``price``, and ``quantity`` are supported. Event-level rows with
     ``bids`` and ``asks`` are also supported when present.
+
+    Warmup semantics
+    ----------------
+
+    A single ``OFIEngine`` is constructed for the chunk and reused across
+    every row. The first emission of OFI therefore happens once the engine
+    has observed both a full bid and a full ask best quote -- this is the
+    warmup guard, not a bug. Callers streaming multiple chunks through a
+    single replay (e.g. multi-hour / multi-day historical runs) should use
+    :func:`process_event_stream` with a caller-supplied engine to preserve
+    warmup state across chunks; building a new chunk per file or per hour
+    discards all warmup and forces the engine to re-seed itself on each
+    call, which is correct but expensive.
+
+    The pandas loop body deliberately uses ``itertuples`` rather than
+    ``iterrows``; rebuilding the chunk into a polars frame is the right
+    move when the loop becomes the bottleneck, but the canonical
+    ``process_event`` semantics stay ahead of any vectorized rewrite --
+    any vectorized replacement must preserve the warmup/sequence-gap
+    contract verified by ``tests/test_microstructure_ofi.py``.
     """
 
     out = df.copy()
