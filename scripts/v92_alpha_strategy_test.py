@@ -112,39 +112,46 @@ def evaluate_branch_events(
 
     df_pd = df_pd.dropna(subset=["fwd_close", "vol_delta_roll_90", "local_high", "local_low"])
 
-    for _, row in df_pd.iterrows():
-        regime = row["regime"]
+    # Resolve column positions once so itertuples() attribute access is O(1).
+    _has_bar_ofi = "bar_ofi" in df_pd.columns
+    _has_ofi_cov = "has_ofi_coverage" in df_pd.columns
+    _has_ofi_roll = "ofi_roll_10" in df_pd.columns and "ofi_roll_90" in df_pd.columns
+
+    for row in df_pd.itertuples(index=False):
+        regime = row.regime
 
         # --- BRANCH A (Breakout / Trend Follow) ---
         if regime == "TREND_BUILDUP":
             side_a = 0
-            if row["volume_delta"] > row["vol_delta_roll_90"] and row["close"] >= row["local_high"]:
+            if row.volume_delta > row.vol_delta_roll_90 and row.close >= row.local_high:
                 side_a = 1
-            elif row["volume_delta"] < row["vol_delta_roll_10"] and row["close"] <= row["local_low"]:
+            elif row.volume_delta < row.vol_delta_roll_10 and row.close <= row.local_low:
                 side_a = -1
             if side_a != 0:
-                events_list.append({"branch": "A_Breakout", "datetime": row["datetime_close"], "regime": regime, "side": side_a, "raw_return": row["raw_return"], "signed_return_bps": side_a * row["raw_return"] * 10_000})
+                events_list.append({"branch": "A_Breakout", "datetime": row.datetime_close, "regime": regime, "side": side_a, "raw_return": row.raw_return, "signed_return_bps": side_a * row.raw_return * 10_000})
 
         # --- BRANCH B (OFI Absorption) ---
-        has_ofi_coverage = bool(row.get("has_ofi_coverage", True))
-        if has_ofi_coverage and "bar_ofi" in row and not pd.isna(row["bar_ofi"]):
-            side_b = 0
-            if row["bar_ofi"] < row["ofi_roll_10"] and row["close"] > row["local_low"]:
-                side_b = 1
-            elif row["bar_ofi"] > row["ofi_roll_90"] and row["close"] < row["local_high"]:
-                side_b = -1
-            if side_b != 0:
-                events_list.append({"branch": "B_Absorption", "datetime": row["datetime_close"], "regime": regime, "side": side_b, "raw_return": row["raw_return"], "signed_return_bps": side_b * row["raw_return"] * 10_000})
+        if _has_bar_ofi and _has_ofi_roll:
+            has_ofi_coverage = bool(row.has_ofi_coverage) if _has_ofi_cov else True
+            bar_ofi_val = row.bar_ofi
+            if has_ofi_coverage and not pd.isna(bar_ofi_val):
+                side_b = 0
+                if bar_ofi_val < row.ofi_roll_10 and row.close > row.local_low:
+                    side_b = 1
+                elif bar_ofi_val > row.ofi_roll_90 and row.close < row.local_high:
+                    side_b = -1
+                if side_b != 0:
+                    events_list.append({"branch": "B_Absorption", "datetime": row.datetime_close, "regime": regime, "side": side_b, "raw_return": row.raw_return, "signed_return_bps": side_b * row.raw_return * 10_000})
 
         # --- BRANCH C (Exhaustion Fade) ---
         if regime == "EXHAUSTED":
             side_c = 0
-            if row["volume"] > row["vol_roll_95"] and row["close"] >= row["local_high"]:
+            if row.volume > row.vol_roll_95 and row.close >= row.local_high:
                 side_c = -1
-            elif row["volume"] > row["vol_roll_95"] and row["close"] <= row["local_low"]:
+            elif row.volume > row.vol_roll_95 and row.close <= row.local_low:
                 side_c = 1
             if side_c != 0:
-                events_list.append({"branch": "C_ExhaustionFade", "datetime": row["datetime_close"], "regime": regime, "side": side_c, "raw_return": row["raw_return"], "signed_return_bps": side_c * row["raw_return"] * 10_000})
+                events_list.append({"branch": "C_ExhaustionFade", "datetime": row.datetime_close, "regime": regime, "side": side_c, "raw_return": row.raw_return, "signed_return_bps": side_c * row.raw_return * 10_000})
 
 
 def main():

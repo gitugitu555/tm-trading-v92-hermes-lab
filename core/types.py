@@ -26,8 +26,8 @@ class SignedTrade:
 @dataclass(frozen=True)
 class BookSnapshot:
     ts_event: datetime
-    bids: list[tuple[float, float]]
-    asks: list[tuple[float, float]]
+    bids: tuple[tuple[float, float], ...]
+    asks: tuple[tuple[float, float], ...]
 
 
 @dataclass(frozen=True)

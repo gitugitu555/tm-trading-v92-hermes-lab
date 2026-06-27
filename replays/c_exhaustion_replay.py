@@ -11,7 +11,10 @@ import pandas as pd
 import polars as pl
 
 from features.regime_classifier import add_regime_labels as _central_regime_labels
-from features.v92_data_policy import epoch_to_datetime_expr as _central_epoch_to_datetime_expr
+from features.v92_data_policy import (
+    MS_US_EPOCH_THRESHOLD as _MS_US_EPOCH_THRESHOLD,
+    epoch_to_datetime_expr as _central_epoch_to_datetime_expr,
+)
 
 __all__ = [
     "CExhaustionReplayConfig",
@@ -162,7 +165,7 @@ def _to_timestamp(value: Any) -> pd.Timestamp:
     if isinstance(value, np.datetime64):
         return pd.Timestamp(value)
     if isinstance(value, (int, np.integer, float, np.floating)):
-        unit = "us" if float(value) > 1e14 else "ms"
+        unit = "us" if float(value) > _MS_US_EPOCH_THRESHOLD else "ms"
         return pd.to_datetime(value, unit=unit)
     return pd.to_datetime(value)
 

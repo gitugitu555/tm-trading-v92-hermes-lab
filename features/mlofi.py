@@ -15,10 +15,6 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-# Distance-decay weights for L1..L5 (L1 is nearest to mid, highest weight)
-_DEFAULT_WEIGHTS = [1.00, 0.80, 0.65, 0.50, 0.40]
-
-
 @dataclass(frozen=True)
 class MLOFISnapshot:
     """Complete MLOFI diagnostic snapshot."""
@@ -266,24 +262,6 @@ class MLOFIEngine:
         """Clear rolling history — call between sessions or symbols."""
         self._history.clear()
         self._last_snapshot = self._empty_snapshot()
-
-    def _empty_snapshot(self) -> MLOFISnapshot:
-        return MLOFISnapshot(
-            mlofi_l1=None,
-            mlofi_l3=None,
-            mlofi_l5=None,
-            mlofi_l10=None,
-            near_book_imbalance=None,
-            far_book_imbalance=None,
-            mlofi_weighted_aggregate=None,
-            mlofi_zscore=None,
-            mlofi_window_mean=None,
-            mlofi_window_std=None,
-            book_agreement_score=0.0,
-            book_trap_score=0.0,
-            levels_used=0,
-            aggregation_method="distance_decay",
-        )
 
 
 # ---------------------------------------------------------------------------
